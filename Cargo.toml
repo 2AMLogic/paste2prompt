@@ -25,6 +25,12 @@ web-sys = "0.3.106"
 
 [profile.release]
 # Smaller wasm for the static site; build speed matters less than download size.
+# Measured for #27 (trunk build --release, wasm-opt -Os, gzip -9 / brotli -q 11):
+# this profile ships 1,932,410 B raw / 757,545 B gz / 591,129 B br. opt-level
+# "s" is +81 KB gz and lto = "thin" is +52 KB gz. Don't set `strip`: the
+# wasm has no symbols to strip once wasm-opt drops the name section, and it
+# also removes the target_features section, so wasm-opt then rejects the
+# bulk-memory ops and the build fails.
 opt-level = "z"
 lto = true
 codegen-units = 1
