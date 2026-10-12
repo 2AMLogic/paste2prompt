@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/web"]
+# Vendored tooling trees (Loom, Claude, agent skills) are not part of the
+# Rust build, even if they ever ship a Cargo.toml of their own.
+exclude = [".loom", ".claude", ".agents"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license-file = "LICENSE"
+repository = "https://github.com/2AMLogic/paste2prompt"
+publish = false
+
+[workspace.dependencies]
+paste2prompt-core = { path = "crates/core" }
+leptos = { version = "0.8.22", features = ["csr"] }
+console_error_panic_hook = "0.1.7"
+
+[profile.release]
+# Smaller wasm for the static site; build speed matters less than download size.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

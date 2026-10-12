@@ -1,0 +1,85 @@
+name: CI
+
+# The vendored tooling trees (.loom, .claude, .agents) are not our code. The
+# Cargo workspace excludes them (see Cargo.toml), so fmt, clippy and test
+# never see them, and no step here lints them. CI itself is not path-filtered,
+# per .loom/docs/ci-principles.md: path filters are an optimisation, not a
+# correctness tool.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to a PR supersedes its older run. On main, a started run is
+# never cancelled (ci-principles rule 2); a newer push replaces only a pending one.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  TRUNK_VERSION: v0.21.14
+  TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
+
+jobs:
+  rust:
+    name: fmt, clippy, test, trunk build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs the toolchain, components and wasm target pinned in
+      # rust-toolchain.toml.
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: core builds for wasm32 without web-sys
+        run: |
+          cargo check -p paste2prompt-core --target wasm32-unknown-unknown
+          if cargo tree -p paste2prompt-core -e normal --target wasm32-unknown-unknown | grep -qE '\b(web-sys|js-sys|wasm-bindgen)\b'; then
+            echo "::error::crates/core must not depend on web-sys, js-sys or wasm-bindgen"
+            exit 1
+          fi
+
+      - name: Install trunk
+        run: |
+          curl -sSfL -o trunk.tar.gz \
+            "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${TRUNK_SHA256}  trunk.tar.gz" | sha256sum -c -
+          tar xzf trunk.tar.gz -C "$HOME/.cargo/bin" trunk
+          rm trunk.tar.gz
+          trunk --version
+
+      # trunk downloads matching wasm-bindgen and wasm-opt binaries here.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/trunk
+          key: trunk-tools-${{ env.TRUNK_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: trunk-tools-${{ env.TRUNK_VERSION }}-
+
+      - name: trunk build --release
+        working-directory: crates/web
+        run: trunk build --release
+
+  licenses:
+    name: dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses

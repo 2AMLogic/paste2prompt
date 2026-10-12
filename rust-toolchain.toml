@@ -1,0 +1,7 @@
+# Pinned so local builds and CI use the same compiler, lints and formatter.
+# Bump deliberately, in its own PR.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

@@ -41,6 +41,35 @@ pasted image, so the format works with any model.
 - Clipboard in and out through the browser Clipboard API (needs a secure
   context).
 
+## Run it locally
+
+The Rust toolchain is pinned in `rust-toolchain.toml`. With
+[rustup](https://rustup.rs) installed, the first `cargo` command fetches the
+pinned compiler and the `wasm32-unknown-unknown` target. You also need
+[trunk](https://trunkrs.dev) (`cargo install trunk --locked`, or a prebuilt
+binary from its releases page).
+
+```sh
+cd crates/web
+trunk serve --open        # dev server with live reload at http://127.0.0.1:8080
+trunk build --release     # static site in ./dist at the repo root
+```
+
+The repo is a Cargo workspace:
+
+- `crates/core`: the edit model, caption text and PNG export, with no browser
+  dependencies. Tested natively.
+- `crates/web`: the Leptos (CSR) browser shell, built with trunk.
+
+Checks, as CI runs them:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo deny check licenses   # needs cargo-deny; permissive licenses only
+```
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE). Free for noncommercial use. For
