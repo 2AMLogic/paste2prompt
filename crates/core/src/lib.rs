@@ -21,14 +21,25 @@
 //! transformed result is only ever a display-only [`Ghost`] (see
 //! [`Edit::ghost`]), never a region, so no edit can be stacked on another's
 //! result.
+//!
+//! # Caption
+//!
+//! [`caption_lines`] / [`Caption`] turn a [`Document`] into the caption block
+//! printed under the exported image: a fixed header, one plain-English
+//! [`CaptionLine`] per edit, then `Overall: …`. [`Caption::to_plain_text`] is
+//! the same text for "Copy caption as text".
 
 #![warn(missing_docs)]
 
+mod caption;
 mod document;
 mod geometry;
 mod history;
 mod op;
 
+pub use caption::{
+    ARROW, CAPTION_HEADER, Caption, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines,
+};
 pub use document::{Document, DocumentError, Edit, EditId, FORMAT_VERSION};
 pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};

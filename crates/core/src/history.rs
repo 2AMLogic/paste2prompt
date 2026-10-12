@@ -11,15 +11,18 @@
 //!   emits many) becomes one step. [`Editor::cancel_gesture`] (`Esc`
 //!   mid-drag) reverts them instead. A gesture that ends where it started
 //!   leaves no step.
+//!   Consecutive [`Editor::move_edit`] calls on the same edit inside a
+//!   gesture fold into one move, so a drag-reorder that ends where it started
+//!   also leaves no step.
 //! - **Typing.** Outside a gesture, only text typing coalesces: consecutive
 //!   [`Editor::set_hint`] calls on the *same* edit, or consecutive
 //!   [`Editor::set_instructions`] calls, merge into the latest step, so typing
-//!   is one step rather than one per key. Anything else (an add, a delete,
-//!   [`Editor::set_op`], [`Editor::set_region`], a hint on a different edit,
+//!   is one step rather than one per key. Anything else (an add, a delete, a
+//!   move, [`Editor::set_op`], [`Editor::set_region`], a hint on a different edit,
 //!   undo, redo, a gesture, or [`Editor::break_coalescing`]) closes that step.
 //!
-//! Outside a gesture, every [`Editor::set_op`] and [`Editor::set_region`] is
-//! its own step, so discrete actions such as pressing `M` to switch the mirror
+//! Outside a gesture, every [`Editor::set_op`], [`Editor::set_region`] and
+//! [`Editor::move_edit`] is its own step, so discrete actions such as pressing `M` to switch the mirror
 //! axis, or switching op kind, undo one press at a time.
 //!
 //! Any new change drops the redo stack. A change that alters nothing records
@@ -38,10 +41,28 @@ use crate::op::{Op, OpError};
 /// One reversible change to the document.
 #[derive(Debug, Clone, PartialEq)]
 enum Change {
-    Insert { index: usize, edit: Edit },
-    Remove { index: usize, edit: Edit },
-    Update { before: Edit, after: Edit },
-    Instructions { before: String, after: String },
+    Insert {
+        index: usize,
+        edit: Edit,
+    },
+    Remove {
+        index: usize,
+        edit: Edit,
+    },
+    Update {
+        before: Edit,
+        after: Edit,
+    },
+    Instructions {
+        before: String,
+        after: String,
+    },
+    /// Moves edit `id` from index `from` to index `to` (its index afterwards).
+    Move {
+        id: EditId,
+        from: usize,
+        to: usize,
+    },
 }
 
 /// What a change updates, for merging changes within one step.
@@ -49,6 +70,9 @@ enum Change {
 enum Target {
     Edit(EditId),
     Instructions,
+    /// An edit's position. Kept apart from [`Target::Edit`] so a move never
+    /// merges with an update of the same edit.
+    Order(EditId),
 }
 
 /// What an open step keeps absorbing outside a gesture: text typing only.
@@ -64,6 +88,7 @@ impl Change {
         match self {
             Self::Update { after, .. } => Some(Target::Edit(after.id())),
             Self::Instructions { .. } => Some(Target::Instructions),
+            Self::Move { id, .. } => Some(Target::Order(*id)),
             Self::Insert { .. } | Self::Remove { .. } => None,
         }
     }
@@ -72,6 +97,7 @@ impl Change {
         match self {
             Self::Update { before, after } => before == after,
             Self::Instructions { before, after } => before == after,
+            Self::Move { from, to, .. } => from == to,
             Self::Insert { .. } | Self::Remove { .. } => false,
         }
     }
@@ -83,6 +109,8 @@ impl Change {
             (Self::Instructions { after, .. }, Self::Instructions { after: a, .. }) => {
                 *after = a;
             }
+            // Consecutive moves of one edit compose: from -> mid -> to.
+            (Self::Move { to, .. }, Self::Move { to: t, .. }) => *to = t,
             _ => unreachable!("absorb is only called for matching targets"),
         }
     }
@@ -98,6 +126,11 @@ impl Change {
             Self::Instructions { before, after } => Self::Instructions {
                 before: after,
                 after: before,
+            },
+            Self::Move { id, from, to } => Self::Move {
+                id,
+                from: to,
+                to: from,
             },
         }
     }
@@ -115,6 +148,16 @@ impl Change {
                 doc.edits_mut()[i] = after.clone();
             }
             Self::Instructions { after, .. } => after.clone_into(doc.instructions_mut()),
+            Self::Move { id, from, to } => {
+                let edits = doc.edits_mut();
+                debug_assert_eq!(
+                    edits[*from].id(),
+                    *id,
+                    "history refers to the edit at `from`"
+                );
+                let edit = edits.remove(*from);
+                edits.insert(*to, edit);
+            }
         }
     }
 }
@@ -243,6 +286,31 @@ impl Editor {
             None,
         );
         Ok(edit)
+    }
+
+    /// Moves an edit so it ends up at `index` (0-based) in the list, shifting
+    /// the edits in between. Badge numbers ([`Document::number_of`]) follow
+    /// the new order.
+    ///
+    /// `index` must be less than the number of edits. Moving an edit to the
+    /// index it already has records nothing. Outside a gesture each move is
+    /// its own undo step and never coalesces with typing; inside a gesture
+    /// (a drag-reorder) the whole drag is one step.
+    pub fn move_edit(&mut self, id: EditId, index: usize) -> Result<(), EditError> {
+        let from = self.doc.index_of(id).ok_or(EditError::UnknownEdit(id))?;
+        let len = self.doc.edits().len();
+        if index >= len {
+            return Err(EditError::IndexOutOfRange { index, len });
+        }
+        self.commit(
+            Change::Move {
+                id,
+                from,
+                to: index,
+            },
+            None,
+        );
+        Ok(())
     }
 
     /// Replaces the image-level instructions.
@@ -410,6 +478,13 @@ pub enum EditError {
     InvalidOp(OpError),
     /// The document has used every edit id (2^53 of them) and can't add more.
     IdsExhausted,
+    /// A position past the end of the edit list.
+    IndexOutOfRange {
+        /// The requested 0-based position.
+        index: usize,
+        /// How many edits the document has.
+        len: usize,
+    },
 }
 
 impl From<OpError> for EditError {
@@ -424,6 +499,9 @@ impl fmt::Display for EditError {
             Self::UnknownEdit(id) => write!(f, "no edit with id {id}"),
             Self::InvalidOp(e) => write!(f, "invalid operation: {e}"),
             Self::IdsExhausted => f.write_str("no edit ids left in this document"),
+            Self::IndexOutOfRange { index, len } => {
+                write!(f, "index {index} is out of range for {len} edits")
+            }
         }
     }
 }
@@ -432,7 +510,7 @@ impl std::error::Error for EditError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidOp(e) => Some(e),
-            Self::UnknownEdit(_) | Self::IdsExhausted => None,
+            Self::UnknownEdit(_) | Self::IdsExhausted | Self::IndexOutOfRange { .. } => None,
         }
     }
 }
@@ -884,6 +962,243 @@ mod tests {
             Err(EditError::IdsExhausted)
         );
         assert!(ed.document().edits().is_empty() && !ed.can_undo());
+    }
+
+    /// An editor with four hint edits, in order `[a, b, c, d]`.
+    fn four() -> (Editor, [EditId; 4]) {
+        let mut ed = editor();
+        let ids = [0.1, 0.3, 0.5, 0.7].map(|x| ed.add_edit(region(x), Op::Hint, None).unwrap());
+        (ed, ids)
+    }
+
+    #[test]
+    fn move_edit_up_down_first_last() {
+        let (mut ed, [a, b, c, d]) = four();
+        // Up one.
+        ed.move_edit(c, 1).unwrap();
+        assert_eq!(ids(&ed), [a, c, b, d]);
+        // Down one.
+        ed.move_edit(c, 2).unwrap();
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        // To first.
+        ed.move_edit(d, 0).unwrap();
+        assert_eq!(ids(&ed), [d, a, b, c]);
+        // To last.
+        ed.move_edit(d, 3).unwrap();
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        ed.move_edit(a, 3).unwrap();
+        assert_eq!(ids(&ed), [b, c, d, a]);
+    }
+
+    #[test]
+    fn move_edit_renumbers_badges() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.move_edit(d, 0).unwrap();
+        let doc = ed.document();
+        assert_eq!(
+            [a, b, c, d].map(|id| doc.number_of(id)),
+            [Some(2), Some(3), Some(4), Some(1)]
+        );
+        ed.undo();
+        let doc = ed.document();
+        assert_eq!(
+            [a, b, c, d].map(|id| doc.number_of(id)),
+            [Some(1), Some(2), Some(3), Some(4)]
+        );
+    }
+
+    #[test]
+    fn move_edit_undo_redo() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.move_edit(a, 2).unwrap();
+        assert_eq!(ids(&ed), [b, c, a, d]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        assert!(ed.redo());
+        assert_eq!(ids(&ed), [b, c, a, d]);
+        assert!(!ed.redo());
+        // The edit itself is untouched by the move.
+        assert_eq!(*ed.document().edit(a).unwrap().region(), region(0.1));
+    }
+
+    #[test]
+    fn each_move_is_its_own_step() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.move_edit(d, 2).unwrap();
+        ed.move_edit(d, 1).unwrap();
+        ed.move_edit(d, 0).unwrap();
+        assert_eq!(ids(&ed), [d, a, b, c]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, d, b, c]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, d, c]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c, d]);
+    }
+
+    #[test]
+    fn move_breaks_typing_coalescing() {
+        let (mut ed, [a, b, ..]) = four();
+        ed.set_hint(a, Some("r".into())).unwrap();
+        ed.move_edit(a, 1).unwrap();
+        ed.set_hint(a, Some("red".into())).unwrap();
+        assert!(ed.undo());
+        assert_eq!(ed.document().edit(a).unwrap().hint(), Some("r"));
+        assert_eq!(ids(&ed)[..2], [b, a]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed)[..2], [a, b]);
+        assert_eq!(ed.document().edit(a).unwrap().hint(), Some("r"));
+    }
+
+    #[test]
+    fn move_between_other_steps_undoes_in_order() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.set_op(b, translate(0.1)).unwrap();
+        ed.move_edit(b, 3).unwrap();
+        ed.delete_edit(c).unwrap();
+        assert_eq!(ids(&ed), [a, d, b]);
+
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, c, d, b]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        assert_eq!(*ed.document().edit(b).unwrap().op(), translate(0.1));
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(b).unwrap().op(), Op::Hint);
+
+        assert!(ed.redo() && ed.redo() && ed.redo());
+        assert_eq!(ids(&ed), [a, d, b]);
+        assert_eq!(*ed.document().edit(b).unwrap().op(), translate(0.1));
+    }
+
+    #[test]
+    fn move_after_undo_drops_redo() {
+        let (mut ed, [a, b, c, _]) = four();
+        ed.set_instructions("x");
+        ed.undo();
+        ed.move_edit(c, 0).unwrap();
+        assert!(!ed.can_redo());
+        assert_eq!(ids(&ed)[..3], [c, a, b]);
+    }
+
+    #[test]
+    fn move_to_same_index_records_nothing_and_keeps_redo() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.set_instructions("x");
+        ed.undo();
+        assert_eq!(ed.move_edit(b, 1), Ok(()));
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        assert!(ed.can_redo());
+        // The next undo removes the last add, not a phantom move.
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c]);
+    }
+
+    #[test]
+    fn move_edit_rejects_bad_id_or_index() {
+        let (mut ed, [a, b, c, d]) = four();
+        assert_eq!(
+            ed.move_edit(a, 4),
+            Err(EditError::IndexOutOfRange { index: 4, len: 4 })
+        );
+        assert_eq!(
+            ed.move_edit(a, usize::MAX),
+            Err(EditError::IndexOutOfRange {
+                index: usize::MAX,
+                len: 4
+            })
+        );
+        ed.delete_edit(d).unwrap();
+        assert_eq!(ed.move_edit(d, 0), Err(EditError::UnknownEdit(d)));
+        assert_eq!(ids(&ed), [a, b, c]);
+        // Neither error left a step: undo restores the delete, then the adds.
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        assert!(ed.undo() && ed.undo() && ed.undo() && ed.undo() && !ed.undo());
+
+        let mut empty = editor();
+        assert_eq!(empty.move_edit(a, 0), Err(EditError::UnknownEdit(a)));
+        assert!(!empty.can_undo());
+    }
+
+    #[test]
+    fn move_errors_display() {
+        let e = EditError::IndexOutOfRange { index: 5, len: 3 };
+        assert_eq!(e.to_string(), "index 5 is out of range for 3 edits");
+    }
+
+    #[test]
+    fn drag_reorder_gesture_is_one_step() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.begin_gesture();
+        ed.move_edit(a, 1).unwrap();
+        ed.move_edit(a, 2).unwrap();
+        ed.move_edit(a, 3).unwrap();
+        ed.end_gesture();
+        assert_eq!(ids(&ed), [b, c, d, a]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        assert!(ed.redo());
+        assert_eq!(ids(&ed), [b, c, d, a]);
+        // Exactly the four adds and the drag.
+        for _ in 0..5 {
+            assert!(ed.undo());
+        }
+        assert!(!ed.undo());
+    }
+
+    #[test]
+    fn drag_reorder_back_to_start_leaves_no_step() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.begin_gesture();
+        ed.move_edit(b, 3).unwrap();
+        ed.move_edit(b, 0).unwrap();
+        ed.move_edit(b, 1).unwrap();
+        ed.end_gesture();
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        // The undo removes the last add, not a no-op drag.
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c]);
+    }
+
+    #[test]
+    fn gesture_mixing_moves_and_updates_undoes_cleanly() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.begin_gesture();
+        ed.move_edit(a, 2).unwrap();
+        ed.set_region(a, region(0.9)).unwrap();
+        ed.move_edit(d, 0).unwrap();
+        ed.move_edit(a, 1).unwrap();
+        ed.end_gesture();
+        assert_eq!(ids(&ed), [d, a, b, c]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        assert_eq!(*ed.document().edit(a).unwrap().region(), region(0.1));
+        assert!(ed.redo());
+        assert_eq!(ids(&ed), [d, a, b, c]);
+        assert_eq!(*ed.document().edit(a).unwrap().region(), region(0.9));
+    }
+
+    #[test]
+    fn cancelled_drag_reorder_restores_order() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.begin_gesture();
+        ed.move_edit(c, 0).unwrap();
+        ed.move_edit(a, 3).unwrap();
+        ed.cancel_gesture();
+        assert_eq!(ids(&ed), [a, b, c, d]);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c]);
+    }
+
+    #[test]
+    fn moved_order_round_trips_through_json() {
+        let (mut ed, [a, b, c, d]) = four();
+        ed.move_edit(c, 0).unwrap();
+        let doc = Document::from_json(&ed.document().to_json()).unwrap();
+        assert_eq!(&doc, ed.document());
+        let order: Vec<EditId> = doc.edits().iter().map(Edit::id).collect();
+        assert_eq!(order, [c, a, b, d]);
     }
 
     #[test]
