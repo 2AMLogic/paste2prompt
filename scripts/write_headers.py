@@ -85,8 +85,7 @@ def headers_file(policy: str) -> str:
         "  X-Content-Type-Options: nosniff\n"
         "  Referrer-Policy: no-referrer\n"
         "  Cross-Origin-Opener-Policy: same-origin\n"
-        "  Permissions-Policy: camera=(), microphone=(), geolocation=(), "
-        "payment=(), usb=(), interest-cohort=()\n"
+        "  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()\n"
     )
 
 

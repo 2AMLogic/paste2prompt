@@ -23,7 +23,6 @@ env:
   CARGO_TERM_COLOR: always
   TRUNK_VERSION: v0.21.14
   TRUNK_SHA256: f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b
-  WRANGLER_VERSION: 4.149.0
 
 jobs:
   rust:
@@ -85,11 +84,25 @@ jobs:
           python3 scripts/privacy_check.py --dist dist --web-crate crates/web
 
       # Validates wrangler.jsonc and the asset upload without credentials.
-      # Its build step reruns trunk (cached) and the privacy guard.
+      # Its build step reruns trunk (cached) and the privacy guard. wrangler
+      # and its whole dependency tree are pinned by package-lock.json.
+      - name: Install wrangler (npm ci)
+        run: npm ci --no-audit --no-fund
+
       - name: wrangler deploy --dry-run
-        run: npx --yes wrangler@${WRANGLER_VERSION} deploy --dry-run
+        run: npx --no-install wrangler deploy --dry-run
         env:
           WRANGLER_SEND_METRICS: "false"
+
+  privacy-guard-tests:
+    name: privacy guard tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Regression tests for scripts/privacy_check.py against fake dist/
+      # trees (no build needed), including every bypass found in review.
+      - name: test_privacy_check.py
+        run: python3 scripts/test_privacy_check.py
 
   licenses:
     name: dependency licenses
