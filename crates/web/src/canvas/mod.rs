@@ -6,6 +6,7 @@
 //! - [`geom`]: hit-testing, lasso simplification and handle math (tested
 //!   natively).
 //! - `view`: image-pixel / screen-pixel mapping.
+//! - `layout`: redraw triggers for size and device-pixel-ratio changes.
 //! - `render`: Canvas2D drawing.
 //! - `source`: the drawable image (#9's `LoadedImage`, or a test pattern).
 //!
@@ -28,6 +29,7 @@
 
 pub mod controller;
 pub mod geom;
+mod layout;
 mod render;
 mod source;
 mod view;
@@ -109,11 +111,25 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
     let cursor = RwSignal::new(Cursor::Default);
     // Bumped to redraw when the layout changes.
     let relayout = RwSignal::new(0_u32);
+    let bump = move || relayout.update(|n| *n = n.wrapping_add(1));
 
-    let handle = window_event_listener(leptos::ev::resize, move |_| {
-        relayout.update(|n| *n = n.wrapping_add(1));
+    // Any change to the canvas's CSS size (window resize, the panel
+    // un-hiding, a scrollbar appearing) or to the device pixel ratio
+    // (zoom, another monitor) re-sizes the backing store and re-fits the
+    // view on the next draw.
+    canvas_ref.on_load(move |canvas| {
+        let canvas: &web_sys::Element = &canvas;
+        let mut targets = vec![canvas.clone()];
+        targets.extend(canvas.parent_element());
+        let targets: Vec<&web_sys::Element> = targets.iter().collect();
+        // Local (not Send) storage; disposing it drops the watches, which
+        // disconnects the observer and removes the media listener.
+        let watches = StoredValue::new_local((
+            layout::SizeWatch::new(&targets, bump),
+            layout::DprWatch::new(bump),
+        ));
+        on_cleanup(move || watches.dispose());
     });
-    on_cleanup(move || handle.remove());
 
     // New image, new session.
     Effect::new(move |_| {

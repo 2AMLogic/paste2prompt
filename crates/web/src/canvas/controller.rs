@@ -236,6 +236,10 @@ enum Drag {
     Translate {
         id: EditId,
         start: Px,
+        /// The translate at drag start, normalized. The drag adds the
+        /// pointer's offset to it, so the destination follows the pointer
+        /// from where it was rather than jumping to the drag start.
+        d0: (f64, f64),
     },
     Scale {
         id: EditId,
@@ -264,6 +268,12 @@ struct Session {
     editor: Editor,
     selected: Option<EditId>,
     drag: Option<Drag>,
+    /// Where the pointer went down, image pixels.
+    press: Px,
+    /// Whether the pointer has moved [`CLICK_SLOP`] from [`Self::press`]
+    /// in this drag. Until it has, a gesture drag changes nothing, so a
+    /// click (or hand jitter) on a region or handle is never an edit.
+    past_slop: bool,
 }
 
 /// Tool, operation, selection and drag state over one image's [`Editor`].
@@ -302,6 +312,8 @@ impl Controller {
             editor: Editor::new(size),
             selected: None,
             drag: None,
+            press: (0.0, 0.0),
+            past_slop: false,
         });
     }
 
@@ -569,6 +581,8 @@ impl Controller {
             s.editor.begin_gesture();
         }
         s.drag = Some(drag);
+        s.press = p.pos;
+        s.past_slop = false;
         true
     }
 
@@ -619,10 +633,17 @@ impl Controller {
                     region0: edit.region().clone(),
                 }
             }
-            Tool::Rect | Tool::Lasso if self.on_selected_translate(p) => Drag::Translate {
-                id: self.selected().expect("translate implies a selection"),
-                start: p,
-            },
+            Tool::Rect | Tool::Lasso if self.on_selected_translate(p) => {
+                let edit = self.selected_edit().expect("translate implies a selection");
+                let Op::Translate { dx, dy } = *edit.op() else {
+                    unreachable!("on_selected_translate checked the op")
+                };
+                Drag::Translate {
+                    id: edit.id(),
+                    start: p,
+                    d0: (dx, dy),
+                }
+            }
             Tool::Rect => Drag::DrawRect {
                 start: p,
                 current: p,
@@ -634,11 +655,18 @@ impl Controller {
     /// Pointer moved to `p` while pressed.
     pub fn pointer_move(&mut self, p: Pointer) {
         let step = self.screen(LASSO_STEP);
+        let slop = self.screen(CLICK_SLOP);
         let tool = self.tool;
         let Some(s) = &mut self.session else { return };
         let size = s.editor.document().image_size();
         let Some(drag) = &mut s.drag else { return };
         let pos = p.pos;
+        if drag.is_gesture() && !s.past_slop {
+            if geom::dist(s.press, pos) < slop {
+                return;
+            }
+            s.past_slop = true;
+        }
         let result = match drag {
             Drag::DrawRect { current, .. } => {
                 *current = pos;
@@ -655,11 +683,13 @@ impl Controller {
                 let (dx, dy) = size.delta_to_normalized(pos.0 - start.0, pos.1 - start.1);
                 s.editor.set_region(*id, region0.shifted(dx, dy))
             }
-            Drag::Translate { id, start } => {
+            Drag::Translate { id, start, d0 } => {
                 let (dx, dy) = size.delta_to_normalized(pos.0 - start.0, pos.1 - start.1);
-                // The core accepts at most a full image width/height; the
-                // pointer can go further over the canvas margin.
-                let (dx, dy) = (dx.clamp(-1.0, 1.0), dy.clamp(-1.0, 1.0));
+                // Recomputed from the drag start every move, like rotate's
+                // `degrees0`, so clamping never accumulates drift. The core
+                // accepts at most a full image width/height; the pointer can
+                // go further over the canvas margin.
+                let (dx, dy) = ((d0.0 + dx).clamp(-1.0, 1.0), (d0.1 + dy).clamp(-1.0, 1.0));
                 s.editor.set_op(*id, Op::Translate { dx, dy })
             }
             Drag::Scale {
@@ -782,17 +812,27 @@ impl Controller {
         self.editor().is_some_and(Editor::can_redo)
     }
 
-    /// Undoes one step, cancelling any drag first.
+    /// Undoes one step. During a drag it only cancels (reverts) the drag
+    /// and undoes no earlier step, matching [`Editor::undo`] during a
+    /// gesture.
     pub fn undo(&mut self) -> bool {
-        self.cancel_drag();
+        if self.cancel_drag() {
+            self.revalidate_selection();
+            return true;
+        }
         let done = self.session.as_mut().is_some_and(|s| s.editor.undo());
         self.revalidate_selection();
         done
     }
 
-    /// Redoes one step, cancelling any drag first.
+    /// Redoes one step. During a drag it only cancels (reverts) the drag
+    /// and redoes nothing, like [`Self::undo`]: one key press never both
+    /// throws away the drag and changes history.
     pub fn redo(&mut self) -> bool {
-        self.cancel_drag();
+        if self.cancel_drag() {
+            self.revalidate_selection();
+            return true;
+        }
         let done = self.session.as_mut().is_some_and(|s| s.editor.redo());
         self.revalidate_selection();
         done
@@ -1379,8 +1419,77 @@ mod tests {
         rect(&mut c);
         c.pointer_down(Pointer::at(40.0, 40.0));
         c.pointer_move(Pointer::at(120.0, 40.0));
+        assert!(c.dragging());
+        assert!(c.undo());
+        assert!(!c.dragging());
+        // Only the drag was undone: the rect, the step before it, survives.
+        assert_eq!(edits(&c).len(), 1);
+        assert_eq!(edits(&c)[0].op(), &Op::Translate { dx: 0.0, dy: 0.0 });
+        assert!(c.can_undo());
+        assert!(!c.can_redo());
+        // The next undo removes the rect.
         assert!(c.undo());
         assert!(edits(&c).is_empty());
+    }
+
+    #[test]
+    fn redo_mid_drag_only_cancels_the_drag() {
+        let mut c = loaded();
+        let a = rect(&mut c);
+        drag(&mut c, Pointer::at(120.0, 20.0), Pointer::at(160.0, 60.0));
+        assert_eq!(edits(&c).len(), 2);
+        assert!(c.undo());
+        assert_eq!(edits(&c).len(), 1);
+        assert!(c.can_redo());
+        // Drag the remaining rect's translate, then redo mid-drag.
+        c.select(Some(a));
+        c.pointer_down(Pointer::at(40.0, 40.0));
+        c.pointer_move(Pointer::at(120.0, 40.0));
+        assert!(c.redo());
         assert!(!c.dragging());
+        // The drag was reverted and nothing was redone.
+        assert_eq!(edits(&c).len(), 1);
+        assert_eq!(edits(&c)[0].op(), &Op::Translate { dx: 0.0, dy: 0.0 });
+        assert!(c.can_redo());
+        // Redo again restores the second rect.
+        assert!(c.redo());
+        assert_eq!(edits(&c).len(), 2);
+    }
+
+    #[test]
+    fn clicking_the_selected_translates_source_keeps_its_destination() {
+        let mut c = loaded();
+        let id = rect(&mut c);
+        drag(&mut c, Pointer::at(40.0, 40.0), Pointer::at(140.0, 60.0));
+        let before = *edits(&c)[0].op();
+        assert_eq!(before, Op::Translate { dx: 0.5, dy: 0.2 });
+        // Undo depth, counted on a copy: the add plus the translate drag.
+        let steps = |c: &Controller| {
+            let mut c = c.clone();
+            let mut n = 0;
+            while c.undo() {
+                n += 1;
+            }
+            n
+        };
+        let steps_before = steps(&c);
+        assert_eq!(steps_before, 2);
+        // A plain click inside the source, and a jittery one under the slop.
+        click(&mut c, Pointer::at(40.0, 40.0));
+        assert_eq!(edits(&c)[0].op(), &before);
+        drag(&mut c, Pointer::at(40.0, 40.0), Pointer::at(42.0, 41.0));
+        assert_eq!(edits(&c)[0].op(), &before);
+        assert_eq!(steps(&c), steps_before, "a click records no undo step");
+        assert_eq!(c.selected(), Some(id));
+        // A real drag moves the destination relative to where it was.
+        drag(&mut c, Pointer::at(40.0, 40.0), Pointer::at(60.0, 30.0));
+        let Op::Translate { dx, dy } = *edits(&c)[0].op() else {
+            panic!("still a translate")
+        };
+        assert!(close(dx, 0.6) && close(dy, 0.1), "{dx} {dy}");
+        assert_eq!(steps(&c), steps_before + 1);
+        // And that drag undoes back to the old destination.
+        assert!(c.undo());
+        assert_eq!(edits(&c)[0].op(), &before);
     }
 }

@@ -38,7 +38,9 @@ features = [
     "ImageData",
     "KeyboardEvent",
     "Location",
+    "MediaQueryList",
     "MouseEvent",
     "PointerEvent",
+    "ResizeObserver",
     "Window",
 ]
