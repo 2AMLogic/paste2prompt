@@ -458,45 +458,86 @@ def csp_problems(policy: str) -> list[str]:
 _PLACEHOLDER_HASH = "'sha256-" + "A" * 43 + "='"
 
 
+# The whitespace JavaScript's String.prototype.trim() removes (WhiteSpace and
+# LineTerminator in ECMA-262). Python's str.strip() differs: it keeps U+FEFF
+# and strips U+001C..U+001F and U+0085, so it would read some lines unlike
+# Cloudflare does.
+_JS_WHITESPACE = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+# Cloudflare's LINE_IS_PROBABLY_A_PATH, /^([^\s]+:\/\/|^\/)/, tested on the
+# trimmed line (JS \s is the same set as trim()).
+_CF_PATH_LINE = re.compile("(?:[^" + re.escape(_JS_WHITESPACE) + "]+://|/)")
+# Cloudflare's MAX_LINE_LENGTH: a longer line is skipped with only a warning,
+# so a CSP line that grew past it would deploy no CSP at all.
+CF_MAX_LINE_LENGTH = 2000
+
+
+def cf_line_length(line: str) -> int:
+    """A line's length as JavaScript counts it (UTF-16 code units)."""
+    return len(line.encode("utf-16-le")) // 2
+
+
 def template_problems(template: str) -> list[str]:
     """Why write_headers.py's HEADERS_TEMPLATE is not one strict `/*` block.
 
     dist/_headers must equal the rendered template, so the exact-match check
-    cannot see a wrong template. In Cloudflare's _headers format, an
-    unindented line starts a path block, an indented `Name: value` line sets
-    a header on it, an indented `! Name` line removes one, and `#` starts a
-    comment. The template may have comments, exactly one path line (`/*`,
-    first), and headers under it. Anything else is a finding.
+    cannot see a wrong template. Lines are read the way Cloudflare's parser
+    reads them (workers-sdk parseHeaders.ts): split on "\n", trim, skip blank
+    and `#` lines, ignore lines over 2000 characters, and call a line a path
+    if it starts with `/` or `scheme://`, whatever its indentation. Any other
+    line is a header: `Name: value`, or `!Name` (no colon) to remove one.
+    The template may have comments, exactly one path line (`/*`, unindented,
+    first), and indented `Name: value` headers with non-empty values under
+    it. Anything else is a finding, including lines Cloudflare would only
+    warn about and drop.
     """
     problems = []
     paths: list[str] = []
     seen: set[str] = set()
     csp: list[str] = []
-    for lineno, line in enumerate(template.splitlines(), 1):
-        stripped = line.strip()
+    for lineno, line in enumerate(template.split("\n"), 1):
+        at = f"line {lineno}"
+        length = cf_line_length(line)
+        if length > CF_MAX_LINE_LENGTH:
+            # Checked before comments, so no line of the file can get there.
+            problems.append(f"{at}: {length} characters; Cloudflare ignores lines over "
+                            f"{CF_MAX_LINE_LENGTH}")
+            continue
+        stripped = line.strip(_JS_WHITESPACE)
         if not stripped or stripped.startswith("#"):
             continue
-        at = f"line {lineno}"
-        if not line[0].isspace():
+        indented = line[0] in _JS_WHITESPACE
+        if _CF_PATH_LINE.match(stripped):
             paths.append(stripped)
             if stripped != "/*":
-                problems.append(f"{at}: path block {stripped!r}; the only block must be /*")
+                problems.append(f"{at}: path block {stripped[:120]!r}; the only block must be /*")
+            if indented:
+                problems.append(f"{at}: indented path line {stripped[:120]!r}; "
+                                "Cloudflare reads it as a new path block")
             continue
+        if not indented:
+            problems.append(f"{at}: unindented header line {stripped[:120]!r}")
         if not paths:
             problems.append(f"{at}: header line before the /* block: {stripped[:120]!r}")
         if stripped.startswith("!"):
             problems.append(f"{at}: header-removal line {stripped[:120]!r}")
             continue
         name, colon, value = stripped.partition(":")
-        name = name.strip().lower()
-        if not colon or not name or " " in name:
+        name = name.strip(_JS_WHITESPACE).lower()
+        value = value.strip(_JS_WHITESPACE)
+        if not colon or not name or any(c.isspace() or c in _JS_WHITESPACE for c in name):
             problems.append(f"{at}: not a 'Name: value' header: {stripped[:120]!r}")
+            continue
+        if not value:
+            problems.append(f"{at}: header {name} has an empty value, which Cloudflare drops")
             continue
         if name in seen:
             problems.append(f"{at}: header {name} set more than once")
         seen.add(name)
         if name == "content-security-policy":
-            csp.append(value.strip())
+            csp.append(value)
     if "report-only" in template.lower():
         problems.append("has a Report-Only policy, which enforces nothing")
     if len(paths) != 1:
@@ -529,6 +570,13 @@ def check_headers(dist: Path, f: Findings) -> None:
     except (ValueError, OSError, UnicodeDecodeError) as e:
         f.add(where, f"cannot compute the expected file: {e}")
         return
+    # The hashes make the rendered CSP line longer than the template's, and
+    # Cloudflare silently ignores a line over its limit.
+    for lineno, line in enumerate(expected.split("\n"), 1):
+        length = cf_line_length(line)
+        if length > CF_MAX_LINE_LENGTH:
+            f.add(where, f"line {lineno}: {length} characters; Cloudflare ignores lines over "
+                         f"{CF_MAX_LINE_LENGTH}")
     try:
         actual = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as e:

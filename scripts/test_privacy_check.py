@@ -398,7 +398,65 @@ class TemplateStructure(unittest.TestCase):
                                  "header line before the /* block")
 
     def test_malformed_header_line_fails(self):
-        self.assertTemplateFails(self.T + "  /index.html\n", "not a 'Name: value' header")
+        for bad in ["  index.html\n", "  X Foo: bar\n", "  X\tFoo: bar\n", "  : bar\n"]:
+            with self.subTest(bad=bad):
+                self.assertTemplateFails(self.T + bad, "not a 'Name: value' header")
+
+    # Cloudflare's parser (workers-sdk parseHeaders.ts) trims each line, then
+    # calls it a path if it matches /^([^\s]+:\/\/|\/)/, whatever its
+    # indentation. These are the Judge's PR #40 repros: each one moves every
+    # header off /* in the deployed file.
+    def test_indented_url_line_opens_a_block(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "/*\n  https://nomatch.example/*\n"),
+                                 "path block 'https://nomatch.example/*'",
+                                 "indented path line", "exactly one path block (/*), found 2")
+
+    def test_indented_slash_line_with_colon_opens_a_block(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "/*\n  /nomatch:x\n"),
+                                 "path block '/nomatch:x'", "indented path line",
+                                 "exactly one path block (/*), found 2")
+
+    def test_indented_path_is_a_path_whatever_the_whitespace(self):
+        for ws in ["\t", " ", "\u00a0", "\ufeff", "\u3000"]:
+            with self.subTest(ws=repr(ws)):
+                self.assertTemplateFails(self.T.replace("/*\n", f"/*\n{ws}/x\n"),
+                                         "path block '/x'", "found 2")
+
+    def test_indented_star_block_is_flagged(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "  /*\n"), "indented path line '/*'")
+
+    def test_unindented_header_fails(self):
+        self.assertTemplateFails(self.T + "X-Frame-Options: DENY\n", "unindented header line")
+
+    def test_removal_without_space_fails(self):
+        self.assertTemplateFails(self.T + "  !Content-Security-Policy\n", "header-removal line")
+
+    def test_empty_header_value_fails(self):
+        for bad in ["  X-Foo:\n", "  X-Foo:   \n"]:
+            with self.subTest(bad=bad):
+                self.assertTemplateFails(self.T + bad, "x-foo has an empty value")
+
+    def test_indented_comment_is_a_comment(self):
+        rc, out = self.run_guard(self.T.replace("/*\n", "/*\n  # /nomatch:x\n"))
+        self.assertEqual(rc, 0, out)
+
+    def test_value_with_line_separator_is_one_line(self):
+        # Cloudflare splits on "\n" only, so U+2028 stays inside the header
+        # value. Reading it with str.splitlines() would see a second line.
+        problems = privacy_check.template_problems(
+            self.T.replace("nosniff\n", "nosniff\u2028/x\n"))
+        self.assertNotIn("path block", "\n".join(problems))
+
+    def test_line_over_2000_fails(self):
+        long_value = "x" * 2001
+        self.assertTemplateFails(self.T + f"  X-Long: {long_value}\n",
+                                 "characters; Cloudflare ignores lines over 2000")
+        self.assertTemplateFails(self.T + f"# {long_value}\n", "Cloudflare ignores lines over 2000")
+
+    def test_real_lines_are_under_the_limit(self):
+        rendered = write_headers.render_headers(["'sha256-" + "A" * 43 + "='"] * 4)
+        longest = max(privacy_check.cf_line_length(line) for line in rendered.split("\n"))
+        self.assertLess(longest, privacy_check.CF_MAX_LINE_LENGTH)
 
     def test_repeated_header_fails(self):
         self.assertTemplateFails(self.T + "  X-Content-Type-Options: nosniff\n",
@@ -431,6 +489,13 @@ class HeadersExact(GuardTest):
         path = self.fx.dist / "_headers"
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
         self.assertPasses()
+
+    def test_rendered_csp_line_over_2000_fails(self):
+        # Each inline script adds a ~54-character hash to the rendered CSP
+        # line, which the template check cannot see.
+        self.fx.html("".join(f"<script>var a{i} = {i};</script>" for i in range(40)))
+        self.fx.headers()
+        self.assertFails("_headers: line 5:", "characters; Cloudflare ignores lines over 2000")
 
     def test_csp_moved_to_another_path_fails(self):
         self.edit_headers(lambda t: t.replace("/*\n", "/__unused__\n"))
