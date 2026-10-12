@@ -9,6 +9,7 @@ use tiny_skia::{
     Transform,
 };
 
+use super::placement::{badge_label, badge_max_width, fit_badge_label};
 use super::text::{Style, Text};
 use crate::{Edit, ImageSize, MirrorAxis, Op, Region};
 
@@ -29,6 +30,9 @@ pub(super) struct MarkScale {
     pub halo: f32,
     /// Height (and minimum width) of a numbered badge.
     pub badge: f32,
+    /// The widest a solid badge may be, ring included
+    /// ([`super::badge_max_width`]); a longer name is cut short with `…`.
+    pub badge_max: f32,
 }
 
 impl MarkScale {
@@ -39,11 +43,15 @@ impl MarkScale {
         let stroke = (k * 0.0035).max(3.0);
         let halo = stroke + 2.0 * (stroke * 0.6).max(1.5);
         let badge = (k * 0.045).max(28.0);
-        Self {
+        let mut scale = Self {
             stroke,
             halo,
             badge,
-        }
+            badge_max: 0.0,
+        };
+        let full_height = f64::from(badge + 2.0 * scale.solid_ring());
+        scale.badge_max = badge_max_width(f64::from(size.width()), full_height) as f32;
+        scale
     }
 
     /// Width of the ring around a solid (source) badge.
@@ -51,11 +59,22 @@ impl MarkScale {
         (self.halo - self.stroke) / 2.0 + 1.0
     }
 
-    /// The full (width, height) of edit `number`'s solid badge, ring
-    /// included, in image pixels: what [`super::badge_positions`] places.
-    pub fn badge_extent(self, text: &mut Text, number: usize) -> (f64, f64) {
+    /// The text of edit `number`'s solid badge: [`badge_label`], its name
+    /// cut short to keep the badge within [`Self::badge_max`].
+    pub fn badge_text(self, text: &mut Text, number: usize, name: Option<&str>) -> String {
         let ring = 2.0 * self.solid_ring();
-        let w = badge_width(text, number, self.badge) + ring;
+        fit_badge_label(number, name, f64::from(self.badge_max), |label| {
+            f64::from(badge_width(text, label, self.badge) + ring)
+        })
+    }
+
+    /// The full (width, height) of edit `number`'s solid badge (with its
+    /// region's `name`, if any, as [`Self::badge_text`] shows it), ring
+    /// included, in image pixels: what [`super::badge_positions`] places.
+    pub fn badge_extent(self, text: &mut Text, number: usize, name: Option<&str>) -> (f64, f64) {
+        let ring = 2.0 * self.solid_ring();
+        let label = self.badge_text(text, number, name);
+        let w = badge_width(text, &label, self.badge) + ring;
         (f64::from(w), f64::from(self.badge + ring))
     }
 }
@@ -110,7 +129,7 @@ impl Marks<'_> {
                     let clear =
                         (gx - cx).hypot(gy - cy) >= 2.0 * b && (gx - sx).hypot(gy - sy) >= 1.5 * b;
                     if clear && (0.0..iw).contains(&gx) && (0.0..ih).contains(&gy) {
-                        self.badge(number, (gx, gy), rgb, true);
+                        self.badge(number, None, (gx, gy), rgb, true);
                     }
                 }
                 Op::Mirror { axis } => {
@@ -126,7 +145,9 @@ impl Marks<'_> {
         if let Some(path) = source {
             self.solid(&path, rgb);
         }
-        self.badge(number, badge, rgb, false);
+        // The source badge carries the region's name (`1 logo`); the
+        // hollow destination badge keeps just the number.
+        self.badge(number, edit.name(), badge, rgb, false);
     }
 
     fn paint(rgb: [u8; 3]) -> Paint<'static> {
@@ -290,11 +311,23 @@ impl Marks<'_> {
     /// stays wholly inside the image (a no-op for a source badge, which
     /// [`super::badge_positions`] already placed inside). A ghost badge is hollow (white with a
     /// colored ring and number) so it can't be mistaken for the source.
-    fn badge(&mut self, number: usize, corner: (f64, f64), rgb: [u8; 3], hollow: bool) {
+    fn badge(
+        &mut self,
+        number: usize,
+        name: Option<&str>,
+        corner: (f64, f64),
+        rgb: [u8; 3],
+        hollow: bool,
+    ) {
         let s = self.scale;
         let h = if hollow { s.badge * 0.8 } else { s.badge };
         let ring = if hollow { s.stroke } else { s.solid_ring() };
-        let w = badge_width(self.text, number, h);
+        let label = if hollow {
+            badge_label(number, name)
+        } else {
+            s.badge_text(self.text, number, name)
+        };
+        let w = badge_width(self.text, &label, h);
         let (iw, ih) = (self.size.width() as f32, self.size.height() as f32);
         let fit = |v: f64, half: f32, max: f32| {
             let lo = half + ring;
@@ -309,7 +342,7 @@ impl Marks<'_> {
             self.text,
             Some(self.clip),
             Badge {
-                number,
+                label: &label,
                 center,
                 height: h,
                 ring,
@@ -320,9 +353,11 @@ impl Marks<'_> {
     }
 }
 
-/// A numbered badge: a capsule with a ring around it and the number inside.
-pub(super) struct Badge {
-    pub number: usize,
+/// A numbered badge: a capsule with a ring around it and the number (and
+/// the region's name, if it has one) inside.
+pub(super) struct Badge<'a> {
+    /// The text inside: [`MarkScale::badge_text`] (or [`badge_label`]).
+    pub label: &'a str,
     /// Center, in canvas pixels.
     pub center: (f32, f32),
     pub height: f32,
@@ -341,14 +376,14 @@ fn badge_style(height: f32) -> Style {
     }
 }
 
-/// Width of the capsule for `number` at `height` (a circle for one digit).
-pub(super) fn badge_width(text: &mut Text, number: usize, height: f32) -> f32 {
-    let label = text.measure(&number.to_string(), badge_style(height));
+/// Width of the capsule for `label` at `height` (a circle for one digit).
+pub(super) fn badge_width(text: &mut Text, label: &str, height: f32) -> f32 {
+    let label = text.measure(label, badge_style(height));
     (label + height * 0.5).max(height)
 }
 
 pub(super) fn draw_badge(pixmap: &mut Pixmap, text: &mut Text, clip: Option<&Mask>, b: Badge) {
-    let mut label = text.layout(&b.number.to_string(), badge_style(b.height), None);
+    let mut label = text.layout(b.label, badge_style(b.height), None);
     let w = (label.width + b.height * 0.5).max(b.height);
     let (cx, cy) = b.center;
     let (outer, inner, ink) = if b.hollow {
