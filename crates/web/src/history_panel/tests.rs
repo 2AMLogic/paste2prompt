@@ -233,46 +233,6 @@ fn panel_calls_without_an_image_do_nothing() {
 }
 
 #[test]
-fn history_keys_never_collide_with_export_or_input_shortcuts() {
-    use super::rules::{Mods, history_key};
-    use crate::export::rules::{KeyContext, shortcut};
-    use crate::input::rules::{Mods as InputMods, is_open_shortcut};
-
-    let keys = ["z", "Z", "y", "Y", "c", "C", "s", "S", "o", "O", "v", "я"];
-    let codes = ["KeyZ", "KeyY", "KeyC", "KeyS", "KeyO", "KeyV"];
-    for bits in 0..16u8 {
-        let (ctrl, meta, shift, alt) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
-        let hm = Mods {
-            ctrl,
-            meta,
-            shift,
-            alt,
-        };
-        let im = InputMods {
-            ctrl,
-            meta,
-            shift,
-            alt,
-        };
-        for key in keys {
-            for code in codes {
-                if history_key(key, code, hm).is_none() {
-                    continue;
-                }
-                for (editable, text_selected) in [(false, false), (false, true), (true, false)] {
-                    let ctx = KeyContext {
-                        editable,
-                        text_selected,
-                    };
-                    assert_eq!(shortcut(key, im, ctx), None, "{key} {code} {bits:04b}");
-                }
-                assert!(!is_open_shortcut(key, im), "{key} {code} {bits:04b}");
-            }
-        }
-    }
-}
-
-#[test]
 fn the_export_caption_carries_the_panel_order_and_the_instructions() {
     // main.rs hands `Exporter` a `DocumentSource` that clones exactly this
     // document, so the exported caption is built from it.

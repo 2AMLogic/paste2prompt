@@ -1,6 +1,5 @@
-//! Pure rules for the history panel: the rows it lists, reorder index math
-//! and the undo/redo key chords. No browser types here, so `cargo test`
-//! covers them natively.
+//! Pure rules for the history panel: the rows it lists and the reorder
+//! index math. No browser types here, so `cargo test` covers them natively.
 
 use paste2prompt_core::{CaptionLine, Document, EditId, caption_lines};
 
@@ -69,109 +68,10 @@ pub fn reorder_index(mids: &[f64], from: usize, y: f64) -> usize {
         .count()
 }
 
-/// Modifier keys of a key event.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Mods {
-    pub ctrl: bool,
-    pub meta: bool,
-    pub shift: bool,
-    pub alt: bool,
-}
-
-/// What an undo/redo chord asks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HistoryKey {
-    Undo,
-    Redo,
-}
-
-/// Maps a key event to undo or redo (spec §Keyboard shortcuts):
-/// `⌘Z` / `Ctrl+Z` undo; `⌘⇧Z` / `Ctrl+Shift+Z` and `Ctrl+Y` redo. Alt
-/// chords are left alone (Ctrl+Alt is AltGr on many layouts), and so is
-/// `⌘Y`, which browsers on macOS use for history.
-///
-/// `key` is `KeyboardEvent.key`. `code` (`KeyboardEvent.code`) is the
-/// fallback when `key` is not a Latin letter, so the chords also work on,
-/// say, a Cyrillic layout; a Latin `key` wins so AZERTY's `Z` stays `Z`.
-pub fn history_key(key: &str, code: &str, mods: Mods) -> Option<HistoryKey> {
-    if mods.alt || !(mods.ctrl || mods.meta) {
-        return None;
-    }
-    let letter = match key.chars().collect::<Vec<_>>().as_slice() {
-        [c] if c.is_ascii_alphabetic() => c.to_ascii_lowercase(),
-        _ => match code {
-            "KeyZ" => 'z',
-            "KeyY" => 'y',
-            _ => return None,
-        },
-    };
-    match letter {
-        'z' if mods.shift => Some(HistoryKey::Redo),
-        'z' => Some(HistoryKey::Undo),
-        'y' if mods.ctrl && !mods.meta && !mods.shift => Some(HistoryKey::Redo),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use paste2prompt_core::{Editor, ImageSize, MirrorAxis, Op, Region};
-
-    const CTRL: Mods = Mods {
-        ctrl: true,
-        meta: false,
-        shift: false,
-        alt: false,
-    };
-    const META: Mods = Mods {
-        ctrl: false,
-        meta: true,
-        shift: false,
-        alt: false,
-    };
-
-    fn shift(m: Mods) -> Mods {
-        Mods { shift: true, ..m }
-    }
-
-    #[test]
-    fn undo_and_redo_chords() {
-        assert_eq!(history_key("z", "KeyZ", CTRL), Some(HistoryKey::Undo));
-        assert_eq!(history_key("z", "KeyZ", META), Some(HistoryKey::Undo));
-        assert_eq!(
-            history_key("Z", "KeyZ", shift(CTRL)),
-            Some(HistoryKey::Redo)
-        );
-        assert_eq!(
-            history_key("z", "KeyZ", shift(META)),
-            Some(HistoryKey::Redo)
-        );
-        assert_eq!(history_key("y", "KeyY", CTRL), Some(HistoryKey::Redo));
-    }
-
-    #[test]
-    fn other_chords_are_not_history_keys() {
-        assert_eq!(history_key("z", "KeyZ", Mods::default()), None);
-        assert_eq!(history_key("z", "KeyZ", shift(Mods::default())), None);
-        assert_eq!(history_key("z", "KeyZ", Mods { alt: true, ..CTRL }), None);
-        // ⌘Y is the browser's history on macOS; Ctrl+Shift+Y is not redo.
-        assert_eq!(history_key("y", "KeyY", META), None);
-        assert_eq!(history_key("Y", "KeyY", shift(CTRL)), None);
-        assert_eq!(history_key("x", "KeyX", CTRL), None);
-        assert_eq!(history_key("Control", "ControlLeft", CTRL), None);
-    }
-
-    #[test]
-    fn layout_key_wins_and_code_is_the_non_latin_fallback() {
-        // AZERTY: the key labelled Z sits where QWERTY has W.
-        assert_eq!(history_key("z", "KeyW", CTRL), Some(HistoryKey::Undo));
-        // ...and QWERTY's Z position types W there, which is not undo.
-        assert_eq!(history_key("w", "KeyZ", CTRL), None);
-        // Cyrillic layout: the Z key types "я".
-        assert_eq!(history_key("я", "KeyZ", CTRL), Some(HistoryKey::Undo));
-        assert_eq!(history_key("н", "KeyY", CTRL), Some(HistoryKey::Redo));
-    }
 
     #[test]
     fn step_index_stops_at_the_ends() {

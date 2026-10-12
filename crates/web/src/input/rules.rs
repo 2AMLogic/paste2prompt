@@ -1,6 +1,6 @@
 //! Pure decision rules for the input paths: which clipboard item or dropped
-//! file to load, and which key chord opens the file browser. No browser types
-//! here, so `cargo test` covers them natively.
+//! file to load. No browser types here, so `cargo test` covers them
+//! natively. The `⌘O` / `Ctrl+O` chord is in [`crate::keymap::rules`].
 
 /// One entry of a `DataTransfer` (clipboard item or dropped file), reduced to
 /// what the rules need.
@@ -75,20 +75,6 @@ pub fn drop_action(files: &[Entry<'_>]) -> DropAction {
         return DropAction::NoFiles;
     }
     first_image(files).map_or(DropAction::NotImage, DropAction::Load)
-}
-
-/// Modifier state of a keyboard event.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Mods {
-    pub ctrl: bool,
-    pub meta: bool,
-    pub shift: bool,
-    pub alt: bool,
-}
-
-/// `true` for `⌘O` / `Ctrl+O` with no Shift or Alt (spec §Keyboard shortcuts).
-pub fn is_open_shortcut(key: &str, mods: Mods) -> bool {
-    key.eq_ignore_ascii_case("o") && (mods.ctrl || mods.meta) && !mods.shift && !mods.alt
 }
 
 #[cfg(test)]
@@ -188,24 +174,5 @@ mod tests {
             DropAction::NotImage
         );
         assert_eq!(drop_action(&[]), DropAction::NoFiles);
-    }
-
-    #[test]
-    fn open_shortcut() {
-        let cmd = Mods {
-            meta: true,
-            ..Mods::default()
-        };
-        let ctrl = Mods {
-            ctrl: true,
-            ..Mods::default()
-        };
-        assert!(is_open_shortcut("o", cmd));
-        assert!(is_open_shortcut("o", ctrl));
-        assert!(is_open_shortcut("O", ctrl)); // Caps Lock
-        assert!(!is_open_shortcut("o", Mods::default())); // `O` alone is rotate
-        assert!(!is_open_shortcut("o", Mods { shift: true, ..cmd }));
-        assert!(!is_open_shortcut("o", Mods { alt: true, ..ctrl }));
-        assert!(!is_open_shortcut("p", cmd));
     }
 }
