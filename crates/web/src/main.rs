@@ -1,6 +1,7 @@
 //! Browser entry point. Built with `trunk`; see the README for how to run it.
 
 mod canvas;
+mod history_panel;
 mod image;
 mod input;
 
@@ -8,6 +9,7 @@ use leptos::prelude::*;
 use paste2prompt_core::APP_NAME;
 
 use crate::canvas::{CanvasState, CanvasToolbar, CanvasView, SourceImage};
+use crate::history_panel::{HistoryPanel, InstructionsBox};
 use crate::image::ImageStore;
 use crate::input::{ImageInput, ImageInputLayer, OpenButton};
 
@@ -17,7 +19,8 @@ fn main() {
 }
 
 /// App shell: header with **Open**, the empty state until an image is
-/// loaded, then the canvas view with its tools.
+/// loaded, then the canvas view with its tools, the instructions box and
+/// the history panel.
 #[component]
 fn App() -> impl IntoView {
     let store = ImageStore::provide();
@@ -50,7 +53,13 @@ fn App() -> impl IntoView {
             </Show>
             <section class="canvas-panel" hidden=empty>
                 <CanvasToolbar />
-                <CanvasView image />
+                <div class="workspace">
+                    <div class="workspace-main">
+                        <CanvasView image />
+                        <InstructionsBox />
+                    </div>
+                    <HistoryPanel />
+                </div>
             </section>
         </main>
         <ImageInputLayer input />
