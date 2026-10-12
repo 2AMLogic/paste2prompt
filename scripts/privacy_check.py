@@ -22,7 +22,9 @@ fails closed instead of going unscanned.
    names another origin, and there is no `<meta http-equiv="refresh">`. CSS
    (any depth): no url() or @import names another origin. SVG (any depth,
    the favicon): only plain drawing elements, no event handlers, no href
-   but a `#fragment`, and no url() or @import to another origin (check_svg).
+   but a `#fragment`, no <style> or style attribute, no CSS-ish attribute
+   value but a local url(#id), and text only in title/desc/text/tspan
+   (check_svg).
    Images and fonts are not scanned, but must start with their format's
    magic bytes.
 3. The import and data sections of every .wasm in dist/ (any depth). Import
@@ -261,14 +263,16 @@ MODULE_ATTR = re.compile(r"\bmodule\s*=\s*\"([^\"]+)\"")
 # Suffixes are compared lowercased. Only the scanned types plus inert images
 # and fonts; no .htm. SVG is markup that can carry script, so it is scanned
 # (check_svg), not inert. An inert file must start with its format's magic
-# bytes, so markup renamed to .ico or .png is a finding, not a pass.
+# bytes, so markup renamed to .ico or .png is a finding, not a pass. Each
+# pattern is matched against the first 16 bytes (.webp is RIFF, a 4-byte
+# size, then WEBP, so a renamed WAV or AVI is a finding too).
 JS_SUFFIXES = {".js", ".mjs"}
 INERT_MAGIC = {
-    ".png": (b"\x89PNG\r\n\x1a\n",),
-    ".ico": (b"\x00\x00\x01\x00",),
-    ".jpg": (b"\xff\xd8\xff",),
-    ".webp": (b"RIFF",),
-    ".woff2": (b"wOF2",),
+    ".png": re.compile(rb"\x89PNG\r\n\x1a\n"),
+    ".ico": re.compile(rb"\x00\x00\x01\x00"),
+    ".jpg": re.compile(rb"\xff\xd8\xff"),
+    ".webp": re.compile(rb"RIFF.{4}WEBP", re.DOTALL),
+    ".woff2": re.compile(rb"wOF2"),
 }
 DIST_NAMES = {"_headers"}
 
@@ -278,17 +282,26 @@ DIST_NAMES = {"_headers"}
 # rewrite an href at runtime) are all findings. No DOCTYPE or entity
 # declarations, and no processing instruction but the XML declaration (an
 # <?xml-stylesheet?> loads a URL). No on* event-handler attribute. Every href
-# (plain or xlink:) must be a same-document `#fragment`. CSS in a <style>
-# element or a style attribute gets the same url()/@import check as a .css
-# file, and so does every other attribute value (fill="url(...)").
+# (plain or xlink:) must be a same-document `#fragment`, and there is no
+# xml:base. CSS fails closed rather than being parsed (#62): no <style>
+# element and no style attribute at all (use presentation attributes such as
+# fill and stroke). No other attribute value may hold a backslash (a CSS
+# escape, so `\75rl(` is `url(`), `url(`, `image-set`, `@import` or
+# `expression(`, except a value that is exactly a local `url(#id)` (a
+# gradient, clip or mask). Text is allowed only inside <title>, <desc>,
+# <text> and <tspan> (any other non-whitespace text is a finding, wherever
+# ElementTree keeps it: an element's .text or a child's .tail).
 SVG_NS = "{http://www.w3.org/2000/svg}"
 SVG_ELEMENTS = {
-    "svg", "g", "defs", "title", "desc", "symbol", "use", "style",
+    "svg", "g", "defs", "title", "desc", "symbol", "use",
     "path", "circle", "ellipse", "rect", "line", "polyline", "polygon",
     "text", "tspan", "linearGradient", "radialGradient", "stop", "clipPath", "mask",
 }
 SVG_DECL = re.compile(r"<!(DOCTYPE|ENTITY|ELEMENT|ATTLIST)", re.IGNORECASE)
 SVG_PI = re.compile(r"<\?(?!xml\s)", re.IGNORECASE)
+SVG_TEXT_ELEMENTS = {"title", "desc", "text", "tspan"}
+SVG_CSSISH = re.compile(r"\\|url\s*\(|image-set|@import|expression\s*\(", re.IGNORECASE)
+SVG_LOCAL_URL = re.compile(r"\s*url\(#[A-Za-z_][A-Za-z0-9_.-]*\)\s*")
 
 # Properties of write_headers.py's CSP template (check 6 runs csp_problems on
 # it). Per-directive source allowlists: lowercased keywords; hash bodies are
@@ -459,12 +472,20 @@ def check_svg(path: Path, f: Findings) -> None:
             local = key.rsplit("}", 1)[-1].lower()
             if local.startswith("on"):
                 f.add(where, f"SVG event-handler attribute {key}={value[:80]!r}")
+            if local == "style":
+                f.add(where, f"SVG style attribute {key}={value[:80]!r}; use presentation attributes")
+            elif local == "base":
+                f.add(where, f"SVG {key}={value[:80]!r} attribute is not allowed")
             if local == "href" and not value.strip().startswith("#"):
                 f.add(where, f"SVG {key}={value[:80]!r} is not a same-document #fragment")
-            for ref in _css_external(value):
-                f.add(where, f"SVG attribute {key} references another origin: {ref}")
-        for ref in _css_external(el.text or ""):
-            f.add(where, f"SVG {tag!r} text references another origin: {ref}")
+            if SVG_CSSISH.search(value) and not SVG_LOCAL_URL.fullmatch(value):
+                f.add(where, f"SVG attribute {key}={value[:80]!r} holds CSS that is not a local url(#id)")
+        # Text directly in el, and text after each child (ElementTree keeps
+        # that in the child's .tail, but it is el's content to a browser).
+        if name not in SVG_TEXT_ELEMENTS:
+            for text in [el.text, *(child.tail for child in el)]:
+                if text and text.strip():
+                    f.add(where, f"SVG {tag!r} has text content {text.strip()[:80]!r}")
 
 
 def _uleb(data: bytes, i: int) -> tuple[int, int]:
@@ -934,7 +955,7 @@ def main(argv: list[str]) -> int:
         elif suffix in INERT_MAGIC:
             with path.open("rb") as fh:
                 head = fh.read(16)
-            if not head.startswith(INERT_MAGIC[suffix]):
+            if not INERT_MAGIC[suffix].match(head):
                 f.add(str(path), f"{suffix} file does not start with the {suffix} magic bytes")
         elif path.parent == dist and path.name in DIST_NAMES:
             pass

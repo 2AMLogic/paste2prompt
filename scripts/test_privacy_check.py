@@ -729,7 +729,8 @@ class Favicon(GuardTest):
     def test_local_fragment_href_passes(self):
         self.fx.write("dist/favicon.svg", SVG_ICON.replace(
             "</svg>", '<defs><linearGradient id="g"><stop offset="0"/></linearGradient></defs>'
-                      '<use href="#g"/><rect fill="url(#g)" style="fill: url(#g)"/></svg>'))
+                      '<use href="#g"/><rect fill="url(#g)" stroke=" url(#g) "/>'
+                      '<text x="1">#1<tspan>!</tspan> ok</text><title>one</title></svg>'))
         self.assertPasses()
 
     def test_malicious_svg_fails(self):
@@ -752,13 +753,38 @@ class Favicon(GuardTest):
                            "is not a same-document #fragment"),
             "javascript href": ('<use href="javascript:x()"/>', "is not a same-document #fragment"),
             "external fill url": ('<rect fill="url(https://evil.example/p.svg#g)"/>',
-                                  "attribute fill references another origin"),
+                                  "attribute fill='url(https"),
             "style attribute url": ('<rect style="fill: url(//evil.example/p#g)"/>',
-                                    "attribute style references another origin"),
+                                    "style attribute style="),
+            "harmless style attribute": ('<rect style="fill: red"/>', "style attribute style="),
             "style element import": ("<style>@import 'https://evil.example/a.css';</style>",
-                                     "text references another origin"),
+                                     "style' is not an allowed"),
             "style element url": ("<style>rect { fill: url(https://evil.example/x) }</style>",
-                                  "text references another origin"),
+                                  "style' is not an allowed"),
+            # The Judge's two repros on #62: CSS after a child lands in .tail.
+            "style text after child": ("<style><desc/>@import url(//evil.example/a.css);</style>",
+                                       "style' is not an allowed"),
+            "style split by child": ("<style>@im<title/>port url(//evil.example/a.css);</style>",
+                                     "style' is not an allowed"),
+            "escaped url in style element": ("<style>a{fill:\\75rl(//evil.example/x)}</style>",
+                                             "style' is not an allowed"),
+            "escaped url in style attribute": ('<rect style="fill:\\75rl(//evil.example/x)"/>',
+                                               "style attribute style="),
+            "escaped url in fill": ('<rect fill="\\75rl(//evil.example/x)"/>',
+                                    "not a local url(#id)"),
+            "image-set": ('<rect fill=\'image-set("//evil.example/x.png" 1x)\'/>',
+                          "not a local url(#id)"),
+            "@import no space": ('<rect fill=\'@import"//evil.example/a.css"\'/>',
+                                 "not a local url(#id)"),
+            "expression": ('<rect fill="expression(x())"/>', "not a local url(#id)"),
+            "uppercase URL": ('<rect fill="URL(#g)x"/>', "not a local url(#id)"),
+            "local url plus more": ('<rect fill="url(#g) url(//evil.example/x)"/>',
+                                    "not a local url(#id)"),
+            "xml:base": ('<g xml:base="https://evil.example/"><use href="#a"/></g>',
+                         "attribute is not allowed"),
+            "text in a drawing element": ("<g>@import url(//evil.example/a.css);</g>",
+                                          "has text content"),
+            "tail text after a child": ("<g><rect/>hello</g>", "has text content"),
             "html-namespace script": ('<h:script xmlns:h="http://www.w3.org/1999/xhtml">x()'
                                       "</h:script>", "is not an allowed drawing element"),
         }
@@ -789,6 +815,32 @@ class Favicon(GuardTest):
 
     def test_xml_declaration_passes(self):
         self.fx.write("dist/favicon.svg", '<?xml version="1.0" encoding="UTF-8"?>\n' + SVG_ICON)
+        self.assertPasses()
+
+    def test_must_fail_css_in_style_element_and_attribute(self):
+        """#62: each Judge bypass, as a whole file, in <style> and in style=."""
+        ns = 'xmlns="http://www.w3.org/2000/svg"'
+        for css in ["<desc/>@import url(//evil.example/a.css);",
+                    "@im<title/>port url(//evil.example/a.css);",
+                    "a{fill:\\75rl(//evil.example/x)}",
+                    'a{background-image:image-set("//evil.example/x.png" 1x)}',
+                    '@import"//evil.example/a.css";']:
+            with self.subTest(css=css):
+                self.fx.write("dist/favicon.svg", f"<svg {ns}><style>{css}</style></svg>")
+                self.assertFails("favicon.svg", "style' is not an allowed")
+        for css in ["fill:\\75rl(//evil.example/x)",
+                    "background-image:image-set(&quot;//evil.example/x.png&quot; 1x)",
+                    "x:1;@import&quot;//evil.example/a.css&quot;"]:
+            with self.subTest(css=css):
+                self.fx.write("dist/favicon.svg", f'<svg {ns}><rect style="{css}"/></svg>')
+                self.assertFails("favicon.svg", "style attribute style=")
+
+    def test_riff_that_is_not_webp_fails(self):
+        (self.fx.dist / "a.webp").write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
+        self.assertFails("a.webp", "magic bytes")
+
+    def test_real_webp_header_passes(self):
+        (self.fx.dist / "a.webp").write_bytes(b"RIFF\x24\x00\x00\x00WEBPVP8 ")
         self.assertPasses()
 
     def test_markup_renamed_to_an_image_fails(self):
