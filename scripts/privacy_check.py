@@ -25,7 +25,8 @@ fails closed instead of going unscanned.
    names must not name a network or navigation API, and every import must
    come from the wasm-bindgen glue (whose shims check 1 has already
    scanned). The data segments (where Rust string literals end up) must not
-   contain `http://`, `https://` or `http-equiv`.
+   contain `http://` or `https://` (except a W3C namespace URI, see below)
+   or `http-equiv`.
 4. The Rust sources and manifest of crates/web: no `#[server]`, `server_fn`,
    `gloo-net`, `reqwest`, or web-sys network types, and no network API in the
    contents of an `inline_js = "..."` string. Comments are not stripped
@@ -68,7 +69,18 @@ inline_js and Rust source (4), and in wasm data (3):
 - An external URL in a string literal, so `a.href = "https://..."; a.click()`
   fails: a quote, then `http:`, `https:` or `//host`. In Rust only `"`
   opens a string and whole `//` comment lines are skipped, so doc-comment
-  URLs pass. Nothing is allowlisted.
+  URLs pass. The one exemption is the fixed XML namespace URIs on
+  www.w3.org (W3C_NAMESPACES: SVG, MathML, XHTML, XLink, XML, XMLNS).
+  They are identifiers that are never fetched or navigated to, and Leptos
+  (tachys) embeds the SVG one in every build with a reactive SVG attribute.
+  The match is case-sensitive and covers the exact `http://www.w3.org/...`
+  scheme, host and path. In JS and Rust the closing quote must follow the
+  URI, so `"http://www.w3.org/2000/svgevil.example"` still fails there. In
+  wasm data it is a prefix match, because rustc packs strings back to back
+  with no terminator, so that same string would pass in wasm data alone.
+  The host stays www.w3.org either way, so the exemption cannot reach
+  another origin. Any other www.w3.org URL, https, or a lookalike host such
+  as `http://www.w3.org.evil.example/2000/svg` is still a finding.
 
 Threat model: this is a static scan for accidental or ordinary network code,
 such as a web-sys binding, a helper crate's snippet, or a copied analytics
@@ -163,26 +175,48 @@ NETWORK_WASM_IMPORT = re.compile(
 # `set_http_equiv`, `http_equiv=` in a view! macro, and markup in a string.
 # Not preceded or followed by a letter or digit, so `http_equivalent` passes.
 RUNTIME_HTTP_EQUIV = re.compile(r"(?<![a-z0-9])http[-_]?equiv(?![a-z0-9])", re.IGNORECASE)
+# Fixed XML namespace URIs (#33). They name a namespace, are never fetched or
+# navigated to, and Leptos's tachys passes the SVG one to createElementNS for
+# every SVG element it builds at runtime. Exact scheme, host and path,
+# matched case-sensitively; see the module docstring for how each scan uses
+# them.
+W3C_NAMESPACES = (
+    "http://www.w3.org/2000/svg",
+    "http://www.w3.org/1998/Math/MathML",
+    "http://www.w3.org/1999/xhtml",
+    "http://www.w3.org/1999/xlink",
+    "http://www.w3.org/XML/1998/namespace",
+    "http://www.w3.org/2000/xmlns/",
+)
+_NS = "|".join(re.escape(u) for u in W3C_NAMESPACES)
 # A string literal that names another origin: an opening quote (", ', `,
 # also the `"` of a Rust raw or byte string), optional whitespace, then
 # `http:` / `https:` or `//` followed by a host character. Assigned to an
 # href and clicked, it navigates away. It is anchored on the quote, so a bare
 # URL in a comment (`/// See https://...`) passes and only a quoted one
 # trips. Blob downloads (#12) pass: `set_href(&blob_url)` has no literal and
-# `blob:` / `data:` are not matched. Nothing is allowlisted.
-EXTERNAL_URL_LITERAL = re.compile(r"""["'`]\s*(https?:|//[^\s/"'`\\])""", re.IGNORECASE)
+# `blob:` / `data:` are not matched. The one exemption is a literal that is
+# exactly one of W3C_NAMESPACES, closed by the same quote.
+EXTERNAL_URL_LITERAL = re.compile(
+    rf"""(["'`])(?!(?-i:{_NS})\1)\s*(https?:|//[^\s/"'`\\])""", re.IGNORECASE
+)
 # Rust: only `"` opens a string (`'` is a char or lifetime, a backtick is
 # nothing; a real build has ``/// plain `http:` on another host``), and a
 # line that is wholly a `//`, `///` or `//!` comment is not scanned for it,
 # so a quoted URL in a doc comment passes. A trailing comment after code and
 # a /* */ block are still scanned (reword them).
-RUST_URL_LITERAL = re.compile(r""""\s*(https?:|//[^\s/"\\])""", re.IGNORECASE)
+RUST_URL_LITERAL = re.compile(rf""""(?!(?-i:{_NS})")\s*(https?:|//[^\s/"\\])""", re.IGNORECASE)
 # The same two in the wasm data section, where strings have no quotes. A
 # bare `//` is not matched there: binary data has many (a real build has
 # `//g9`), so a protocol-relative literal is caught only in the Rust source.
 # No word boundaries either: rustc packs string literals back to back, so
 # "http-equiv" is often followed directly by the next string's letters.
-WASM_DATA_NAVIGATION = re.compile(rb"https?://|http[-_]?equiv", re.IGNORECASE)
+# For the same reason a W3C namespace URI is exempt as a prefix here: the
+# next string's bytes follow it directly (a real build has
+# `http://www.w3.org/2000/svg\x1f\x02`).
+WASM_DATA_NAVIGATION = re.compile(
+    rb"(?!(?-i:" + _NS.encode() + rb"))https?://|http[-_]?equiv", re.IGNORECASE
+)
 
 # wasm-bindgen's glue module, the only place imports may come from: "wbg" or,
 # in current versions, "./<crate>_bg.js".
@@ -373,6 +407,10 @@ def _wasm_section(data: bytes, wanted: int) -> int | None:
     while i < len(data):
         section, i = data[i], i + 1
         size, i = _uleb(data, i)
+        if i + size > len(data):
+            # Fail closed: stopping here would leave the rest of the file
+            # (and the section we want) unscanned.
+            raise ValueError(f"section {section} claims {size} bytes, past the end of the file")
         if section == wanted:
             return i
         i += size
