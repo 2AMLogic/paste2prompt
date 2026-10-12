@@ -16,6 +16,12 @@ publish = false
 paste2prompt-core = { path = "crates/core" }
 leptos = { version = "0.8.22", features = ["csr"] }
 console_error_panic_hook = "0.1.7"
+# Pinned to the versions leptos already pulls in, so the lockfile only gains
+# feature flags. Browser features are enabled per crate (see crates/web).
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+js-sys = "0.3.106"
+web-sys = "0.3.106"
 
 [profile.release]
 # Smaller wasm for the static site; build speed matters less than download size.
