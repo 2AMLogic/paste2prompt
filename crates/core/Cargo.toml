@@ -24,6 +24,11 @@ tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
 # Plain PNG encode of the export; no text chunks (MIT OR Apache-2.0).
 png = "0.18.1"
+# NFC-normalizes caption text before the font-coverage check, so decomposed
+# accents (e + U+0301) draw as the subset's precomposed glyph (MIT OR
+# Apache-2.0). Only its per-character functions are used, so the
+# compatibility tables stay out of the wasm (see `render/text.rs`).
+unicode-normalization = { version = "0.1.25", default-features = false }
 
 [dev-dependencies]
 # Inline snapshot tests for the caption text (Apache-2.0).

@@ -253,15 +253,6 @@ class CspTemplateProperties(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(directives.get(name), want)
 
-    def test_template_is_one_star_block(self):
-        lines = write_headers.HEADERS_TEMPLATE.splitlines()
-        rules = [ln for ln in lines if ln and not ln.startswith((" ", "\t", "#"))]
-        self.assertEqual(rules, ["/*"])
-        self.assertFalse(any(ln.strip().startswith("!") for ln in lines))
-        self.assertEqual(sum("Content-Security-Policy:" in ln for ln in lines), 1)
-        self.assertNotIn("Report-Only", write_headers.HEADERS_TEMPLATE)
-        self.assertEqual(write_headers.HEADERS_TEMPLATE.count(write_headers.SCRIPT_HASHES), 1)
-
     def test_dropping_a_required_directive_is_a_problem(self):
         for name in ["form-action", "base-uri", "frame-ancestors", "connect-src", "default-src"]:
             with self.subTest(name=name):
@@ -330,6 +321,160 @@ class CspTemplateProperties(unittest.TestCase):
         self.assertIn("write_headers.py: template: CSP form-action must be exactly 'none'", out)
 
 
+class TemplateStructure(unittest.TestCase):
+    """Issue #32: the guard itself checks HEADERS_TEMPLATE's structure.
+
+    Each test edits the template in write_headers.py, writes dist/_headers
+    from the edited template (so the exact-match check passes), and runs the
+    guard, as `wrangler deploy`'s build step does. Only the guard's own
+    template check can fail it.
+    """
+
+    T = write_headers.HEADERS_TEMPLATE
+    CSP_LINE = f"  Content-Security-Policy: {write_headers.template_policy()}\n"
+
+    def run_guard(self, template: str) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch.object(write_headers, "HEADERS_TEMPLATE", template):
+            fx = Fixture(Path(tmp))
+            # The deployed file matches the edited template, so only the
+            # template check can catch the edit.
+            self.assertEqual((fx.dist / "_headers").read_text(encoding="utf-8"),
+                             write_headers.expected_headers(fx.dist))
+            return fx.run()
+
+    def assertTemplateFails(self, template: str, *needles: str) -> None:
+        rc, out = self.run_guard(template)
+        self.assertEqual(rc, 1, f"guard passed an edited template:\n{out}")
+        self.assertIn("write_headers.py: HEADERS_TEMPLATE:", out)
+        for needle in needles:
+            self.assertIn(needle, out)
+
+    def test_real_template_has_no_problems(self):
+        self.assertEqual(privacy_check.template_problems(self.T), [])
+        self.assertIn(self.CSP_LINE, self.T)
+
+    def test_index_html_csp_removal_fails(self):
+        # The issue's reproduction.
+        self.assertTemplateFails(self.T + "/index.html\n  ! Content-Security-Policy\n",
+                                 "path block '/index.html'", "header-removal line",
+                                 "exactly one path block (/*), found 2")
+
+    def test_removal_line_in_star_block_fails(self):
+        self.assertTemplateFails(self.T + "  ! X-Content-Type-Options\n", "header-removal line")
+
+    def test_star_block_renamed_fails(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "/index.html\n"),
+                                 "path block '/index.html'; the only block must be /*")
+
+    def test_other_path_block_fails(self):
+        for extra in ["/assets/*\n  Cache-Control: no-store\n",
+                      "https://paste2prompt.example/*\n  X-Robots-Tag: noindex\n"]:
+            with self.subTest(extra=extra):
+                self.assertTemplateFails(self.T + extra, "the only block must be /*")
+
+    def test_report_only_added_fails(self):
+        self.assertTemplateFails(
+            self.T + "  Content-Security-Policy-Report-Only: default-src 'none'\n",
+            "Report-Only")
+
+    def test_csp_turned_into_report_only_fails(self):
+        self.assertTemplateFails(
+            self.T.replace("Content-Security-Policy:", "Content-Security-Policy-Report-Only:"),
+            "Report-Only", "Content-Security-Policy exactly once, found 0")
+
+    def test_second_csp_line_fails(self):
+        self.assertTemplateFails(self.T + "  content-security-policy: default-src *\n",
+                                 "set more than once", "exactly once, found 2")
+
+    def test_csp_line_not_from_directives_fails(self):
+        # csp_problems checks CSP_DIRECTIVES, so a hand-edited line must equal it.
+        edited = self.T.replace("form-action 'none'", "form-action 'self'")
+        self.assertNotEqual(edited, self.T)
+        self.assertTemplateFails(edited, "is not '; '.join(CSP_DIRECTIVES)")
+
+    def test_header_before_block_fails(self):
+        self.assertTemplateFails("  Access-Control-Allow-Origin: *\n" + self.T,
+                                 "header line before the /* block")
+
+    def test_malformed_header_line_fails(self):
+        for bad in ["  index.html\n", "  X Foo: bar\n", "  X\tFoo: bar\n", "  : bar\n"]:
+            with self.subTest(bad=bad):
+                self.assertTemplateFails(self.T + bad, "not a 'Name: value' header")
+
+    # Cloudflare's parser (workers-sdk parseHeaders.ts) trims each line, then
+    # calls it a path if it matches /^([^\s]+:\/\/|\/)/, whatever its
+    # indentation. These are the Judge's PR #40 repros: each one moves every
+    # header off /* in the deployed file.
+    def test_indented_url_line_opens_a_block(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "/*\n  https://nomatch.example/*\n"),
+                                 "path block 'https://nomatch.example/*'",
+                                 "indented path line", "exactly one path block (/*), found 2")
+
+    def test_indented_slash_line_with_colon_opens_a_block(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "/*\n  /nomatch:x\n"),
+                                 "path block '/nomatch:x'", "indented path line",
+                                 "exactly one path block (/*), found 2")
+
+    def test_indented_path_is_a_path_whatever_the_whitespace(self):
+        for ws in ["\t", " ", "\u00a0", "\ufeff", "\u3000"]:
+            with self.subTest(ws=repr(ws)):
+                self.assertTemplateFails(self.T.replace("/*\n", f"/*\n{ws}/x\n"),
+                                         "path block '/x'", "found 2")
+
+    def test_indented_star_block_is_flagged(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "  /*\n"), "indented path line '/*'")
+
+    def test_unindented_header_fails(self):
+        self.assertTemplateFails(self.T + "X-Frame-Options: DENY\n", "unindented header line")
+
+    def test_removal_without_space_fails(self):
+        self.assertTemplateFails(self.T + "  !Content-Security-Policy\n", "header-removal line")
+
+    def test_empty_header_value_fails(self):
+        for bad in ["  X-Foo:\n", "  X-Foo:   \n"]:
+            with self.subTest(bad=bad):
+                self.assertTemplateFails(self.T + bad, "x-foo has an empty value")
+
+    def test_indented_comment_is_a_comment(self):
+        rc, out = self.run_guard(self.T.replace("/*\n", "/*\n  # /nomatch:x\n"))
+        self.assertEqual(rc, 0, out)
+
+    def test_value_with_line_separator_is_one_line(self):
+        # Cloudflare splits on "\n" only, so U+2028 stays inside the header
+        # value. Reading it with str.splitlines() would see a second line.
+        problems = privacy_check.template_problems(
+            self.T.replace("nosniff\n", "nosniff\u2028/x\n"))
+        self.assertNotIn("path block", "\n".join(problems))
+
+    def test_line_over_2000_fails(self):
+        long_value = "x" * 2001
+        self.assertTemplateFails(self.T + f"  X-Long: {long_value}\n",
+                                 "characters; Cloudflare ignores lines over 2000")
+        self.assertTemplateFails(self.T + f"# {long_value}\n", "Cloudflare ignores lines over 2000")
+
+    def test_real_lines_are_under_the_limit(self):
+        rendered = write_headers.render_headers(["'sha256-" + "A" * 43 + "='"] * 4)
+        longest = max(privacy_check.cf_line_length(line) for line in rendered.split("\n"))
+        self.assertLess(longest, privacy_check.CF_MAX_LINE_LENGTH)
+
+    def test_repeated_header_fails(self):
+        self.assertTemplateFails(self.T + "  X-Content-Type-Options: nosniff\n",
+                                 "x-content-type-options set more than once")
+
+    def test_placeholder_count(self):
+        # render_headers refuses this before the guard runs; check it directly.
+        problems = privacy_check.template_problems(
+            self.T + f"# {write_headers.SCRIPT_HASHES}\n")
+        self.assertIn("placeholder once, found 2", "\n".join(problems))
+        problems = privacy_check.template_problems(self.T.replace(write_headers.SCRIPT_HASHES, ""))
+        self.assertIn("placeholder once, found 0", "\n".join(problems))
+
+    def test_comments_and_blank_lines_are_allowed(self):
+        rc, out = self.run_guard("# a comment\n\n" + self.T + "\n# trailing\n")
+        self.assertEqual(rc, 0, out)
+
+
 class HeadersExact(GuardTest):
     """Judge round 2, finding 1: _headers must be exactly write_headers.py's output."""
 
@@ -344,6 +489,13 @@ class HeadersExact(GuardTest):
         path = self.fx.dist / "_headers"
         path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
         self.assertPasses()
+
+    def test_rendered_csp_line_over_2000_fails(self):
+        # Each inline script adds a ~54-character hash to the rendered CSP
+        # line, which the template check cannot see.
+        self.fx.html("".join(f"<script>var a{i} = {i};</script>" for i in range(40)))
+        self.fx.headers()
+        self.assertFails("_headers: line 5:", "characters; Cloudflare ignores lines over 2000")
 
     def test_csp_moved_to_another_path_fails(self):
         self.edit_headers(lambda t: t.replace("/*\n", "/__unused__\n"))

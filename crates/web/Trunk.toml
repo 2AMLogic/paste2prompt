@@ -2,3 +2,9 @@
 target = "index.html"
 # Output to the repo-root dist/ (gitignored) so hosting has one fixed path.
 dist = "../../dist"
+
+[tools]
+# The binaryen release trunk downloads for wasm-opt (index.html sets the
+# level). Pinned so a trunk upgrade can't silently change the shipped wasm;
+# this is the version trunk 0.21.14 picks by default.
+wasm_opt = "version_123"
