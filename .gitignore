@@ -1,6 +1,8 @@
 /target
 /dist
 /pkg
+# wrangler dev / deploy local state
+.wrangler/
 node_modules/
 .DS_Store
 # >>> loom-managed (do not edit) >>>
