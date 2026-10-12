@@ -552,6 +552,77 @@ class HeadersExact(GuardTest):
         self.assertFails("file type the privacy guard does not scan")
 
 
+class RenderedStructure(unittest.TestCase):
+    """Issue #45: the structural check also runs on the rendered file.
+
+    Each test patches write_headers.py's render path (render_headers or
+    expected_headers) to add lines outside HEADERS_TEMPLATE. The build then
+    writes those lines to dist/_headers, and the guard's expected value moves
+    with them, so the exact-match check passes. The template is untouched, so
+    template_problems passes too. Only the check on the rendered text can
+    fail the guard.
+    """
+
+    EXTRAS = {
+        "second path block": ("/index.html\n  X-Frame-Options: DENY\n",
+                              "path block '/index.html'"),
+        "removal line": ("  ! Content-Security-Policy\n",
+                         "header-removal line '! Content-Security-Policy'"),
+        "removal block": ("/index.html\n  ! Content-Security-Policy\n",
+                          "header-removal line '! Content-Security-Policy'"),
+        "report-only header": ("  Content-Security-Policy-Report-Only: default-src 'none'\n",
+                               "has a Report-Only policy"),
+    }
+
+    def run_guard(self, target: str, extra: str) -> tuple[int, str]:
+        original = getattr(write_headers, target)
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch.object(write_headers, target,
+                                           lambda arg: original(arg) + extra):
+            fx = Fixture(Path(tmp))
+            text = (fx.dist / "_headers").read_text(encoding="utf-8")
+            self.assertTrue(text.endswith(extra))
+            # The deployed file equals the guard's expected value, and the
+            # template still passes its own check.
+            self.assertEqual(text, write_headers.expected_headers(fx.dist))
+            self.assertEqual(privacy_check.template_problems(write_headers.HEADERS_TEMPLATE), [])
+            return fx.run()
+
+    def test_patched_render_path_fails(self):
+        for target in ("render_headers", "expected_headers"):
+            for label, (extra, needle) in self.EXTRAS.items():
+                with self.subTest(target=target, extra=label):
+                    rc, out = self.run_guard(target, extra)
+                    self.assertEqual(rc, 1, f"guard passed a patched {target}:\n{out}")
+                    self.assertNotIn("differs", out)
+                    self.assertNotIn("HEADERS_TEMPLATE:", out)
+                    # Both the render output and the deployed bytes are checked.
+                    lines = [line for line in out.splitlines() if needle in line]
+                    self.assertEqual(len(lines), 2, out)
+                    self.assertIn("write_headers.py: render_headers() output: ", lines[0])
+                    self.assertIn("/dist/_headers: ", lines[1])
+
+    def test_unpatched_render_has_no_problems(self):
+        rendered = write_headers.render_headers(["'sha256-" + "A" * 43 + "='"] * 2)
+        self.assertEqual(privacy_check.rendered_problems(rendered), [])
+
+    def test_rendered_csp_must_be_the_template_with_hashes(self):
+        good = write_headers.render_headers(["'sha256-" + "A" * 43 + "='"])
+        for label, edit in {
+            "placeholder left in": lambda t: t.replace("'sha256-" + "A" * 43 + "='",
+                                                       write_headers.SCRIPT_HASHES),
+            "no hash": lambda t: t.replace(" 'sha256-" + "A" * 43 + "='", ""),
+            "host instead of hash": lambda t: t.replace("'sha256-" + "A" * 43 + "='",
+                                                        "https://cdn.example"),
+            "directive appended": lambda t: t.replace("frame-ancestors 'none'",
+                                                      "frame-ancestors 'none'; img-src *"),
+        }.items():
+            with self.subTest(edit=label):
+                problems = privacy_check.rendered_problems(edit(good))
+                self.assertTrue(any("Content-Security-Policy line is not" in p
+                                    or "placeholder" in p for p in problems), problems)
+
+
 class FileTypesAnyCase(GuardTest):
     """Judge round 2, finding 2: every file-type decision is case-insensitive."""
 

@@ -51,8 +51,12 @@ fails closed instead of going unscanned.
    template's structure is checked too (template_problems): exactly one path
    block and it is `/*`, no `!` header-removal line, no Report-Only policy,
    no repeated header, and exactly one Content-Security-Policy line, equal to
-   CSP_DIRECTIVES joined. `wrangler deploy` runs only this guard, not the
-   tests, so these properties have to hold here.
+   CSP_DIRECTIVES joined. The same structural rules run on
+   render_headers()'s output and on the bytes of dist/_headers, with the
+   hashes in place of the placeholder (rendered_problems), because both come
+   from write_headers.py: a render path that appended a block or a `!` line
+   would move the expected value with the file. `wrangler deploy` runs only
+   this guard, not the tests, so these properties have to hold here.
 
 Navigation (`open(`, `location = ...`, `location.href|host|hostname|... =`,
 `location[...]`, `location.assign`, `location.replace`) can also carry data
@@ -598,25 +602,25 @@ def cf_line_length(line: str) -> int:
     return len(line.encode("utf-16-le")) // 2
 
 
-def template_problems(template: str) -> list[str]:
-    """Why write_headers.py's HEADERS_TEMPLATE is not one strict `/*` block.
+def _structure_problems(text: str) -> tuple[list[str], list[str]]:
+    """Why a _headers text is not one strict `/*` block, plus its CSP values.
 
-    dist/_headers must equal the rendered template, so the exact-match check
-    cannot see a wrong template. Lines are read the way Cloudflare's parser
+    Lines are read the way Cloudflare's parser
     reads them (workers-sdk parseHeaders.ts): split on "\n", trim, skip blank
     and `#` lines, ignore lines over 2000 characters, and call a line a path
     if it starts with `/` or `scheme://`, whatever its indentation. Any other
     line is a header: `Name: value`, or `!Name` (no colon) to remove one.
-    The template may have comments, exactly one path line (`/*`, unindented,
+    The text may have comments, exactly one path line (`/*`, unindented,
     first), and indented `Name: value` headers with non-empty values under
     it. Anything else is a finding, including lines Cloudflare would only
-    warn about and drop.
+    warn about and drop. template_problems and rendered_problems share this
+    and differ only in what the one CSP value must be.
     """
     problems = []
     paths: list[str] = []
     seen: set[str] = set()
     csp: list[str] = []
-    for lineno, line in enumerate(template.split("\n"), 1):
+    for lineno, line in enumerate(text.split("\n"), 1):
         at = f"line {lineno}"
         length = cf_line_length(line)
         if length > CF_MAX_LINE_LENGTH:
@@ -657,17 +661,59 @@ def template_problems(template: str) -> list[str]:
         seen.add(name)
         if name == "content-security-policy":
             csp.append(value)
-    if "report-only" in template.lower():
+    if "report-only" in text.lower():
         problems.append("has a Report-Only policy, which enforces nothing")
     if len(paths) != 1:
         problems.append(f"must have exactly one path block (/*), found {len(paths)}")
     if len(csp) != 1:
         problems.append(f"must set Content-Security-Policy exactly once, found {len(csp)}")
-    elif csp[0] != write_headers.template_policy():
+    return problems, csp
+
+
+def template_problems(template: str) -> list[str]:
+    """Why write_headers.py's HEADERS_TEMPLATE is not one strict `/*` block.
+
+    dist/_headers must equal the rendered template, so the exact-match check
+    cannot see a wrong template. See _structure_problems for the rules; the
+    CSP line must be CSP_DIRECTIVES joined, placeholder included.
+    """
+    problems, csp = _structure_problems(template)
+    if len(csp) == 1 and csp[0] != write_headers.template_policy():
         problems.append("Content-Security-Policy line is not '; '.join(CSP_DIRECTIVES)")
     n = template.count(write_headers.SCRIPT_HASHES)
     if n != 1:
         problems.append(f"must contain the {write_headers.SCRIPT_HASHES} placeholder once, found {n}")
+    return problems
+
+
+_SHA256_SOURCE = re.compile(r"'sha256-[A-Za-z0-9+/]+={0,2}'")
+
+
+def rendered_problems(text: str) -> list[str]:
+    """Why a rendered _headers (hashes filled in) is not one strict `/*` block.
+
+    The same rules as template_problems, applied to the rendered text: the
+    output of write_headers.render_headers() and the bytes of dist/_headers.
+    Both come from write_headers.py, the module this guard checks, so a
+    render path that adds lines outside the template would change the file
+    and the guard's expected value alike and pass the exact-match check.
+    Here the CSP line must be CSP_DIRECTIVES joined with the placeholder
+    replaced by one or more 'sha256-...' sources, and must pass csp_problems.
+    """
+    problems, csp = _structure_problems(text)
+    if len(csp) == 1:
+        before, _, after = write_headers.template_policy().partition(write_headers.SCRIPT_HASHES)
+        value = csp[0]
+        fits = (len(value) >= len(before) + len(after)
+                and value.startswith(before) and value.endswith(after))
+        hashes = value[len(before):len(value) - len(after)].split(" ") if fits else []
+        if not fits or not all(_SHA256_SOURCE.fullmatch(h) for h in hashes):
+            problems.append("Content-Security-Policy line is not CSP_DIRECTIVES joined with "
+                            "the inline-script hashes filled in")
+        problems.extend(csp_problems(value))
+    n = text.count(write_headers.SCRIPT_HASHES)
+    if n:
+        problems.append(f"contains the {write_headers.SCRIPT_HASHES} placeholder {n} time(s)")
     return problems
 
 
@@ -689,19 +735,22 @@ def check_headers(dist: Path, f: Findings) -> None:
     except (ValueError, OSError, UnicodeDecodeError) as e:
         f.add(where, f"cannot compute the expected file: {e}")
         return
-    # The hashes make the rendered CSP line longer than the template's, and
+    # The exact-match check below trusts write_headers.py for the expected
+    # value, so both the render output and the deployed bytes get the
+    # structural check too: a render path that appends a block, a `!` line
+    # or a Report-Only header fails here even when the file matches it. The
+    # hashes also make the rendered CSP line longer than the template's, and
     # Cloudflare silently ignores a line over its limit.
-    for lineno, line in enumerate(expected.split("\n"), 1):
-        length = cf_line_length(line)
-        if length > CF_MAX_LINE_LENGTH:
-            f.add(where, f"line {lineno}: {length} characters; Cloudflare ignores lines over "
-                         f"{CF_MAX_LINE_LENGTH}")
+    for problem in rendered_problems(expected):
+        f.add("scripts/write_headers.py", f"render_headers() output: {problem}")
     try:
         actual = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as e:
         f.add(where, f"not UTF-8: {e}")
         return
     actual = actual.replace("\r\n", "\n").replace("\r", "\n")
+    for problem in rendered_problems(actual):
+        f.add(where, problem)
     if actual == expected:
         return
     diff = list(difflib.unified_diff(
