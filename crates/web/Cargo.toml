@@ -25,6 +25,7 @@ features = [
     "DataTransferItem",
     "DataTransferItemList",
     "Document",
+    "DomRect",
     "DragEvent",
     "Element",
     "File",
@@ -35,5 +36,8 @@ features = [
     "ImageBitmap",
     "ImageData",
     "KeyboardEvent",
+    "Location",
+    "MouseEvent",
+    "PointerEvent",
     "Window",
 ]

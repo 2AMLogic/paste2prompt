@@ -1,11 +1,13 @@
 //! Browser entry point. Built with `trunk`; see the README for how to run it.
 
+mod canvas;
 mod image;
 mod input;
 
 use leptos::prelude::*;
 use paste2prompt_core::APP_NAME;
 
+use crate::canvas::{CanvasState, CanvasToolbar, CanvasView, SourceImage};
 use crate::image::ImageStore;
 use crate::input::{ImageInput, ImageInputLayer, OpenButton};
 
@@ -15,17 +17,23 @@ fn main() {
 }
 
 /// App shell: header with **Open**, the empty state until an image is
-/// loaded, then the (still placeholder) canvas. The canvas view, tools and
-/// controls arrive in later issues.
+/// loaded, then the canvas view with its tools.
 #[component]
 fn App() -> impl IntoView {
     let store = ImageStore::provide();
-    // No edit model yet, so loading never needs a confirmation. The history
-    // work (#11) replaces this with "the session has at least one edit".
-    let has_edits = Signal::derive(|| false);
-    let input = ImageInput::new(store, has_edits);
+    let canvas = CanvasState::provide();
+    let input = ImageInput::new(store, canvas.has_edits());
     let current = store.current();
-    let empty = move || current.with(Option::is_none);
+    // `?test-pattern` shows a generated image until a real one is loaded.
+    let test_pattern = canvas::test_pattern_requested()
+        .then(|| SourceImage::test_pattern(1280, 800).ok())
+        .flatten();
+    let image = Signal::derive_local(move || {
+        current
+            .with(|i| i.as_ref().map(SourceImage::from_loaded))
+            .or_else(|| test_pattern.clone())
+    });
+    let empty = move || image.with(Option::is_none);
 
     view! {
         <header>
@@ -40,13 +48,16 @@ fn App() -> impl IntoView {
                     <OpenButton input class="primary" />
                 </section>
             </Show>
-            <canvas id="stage" width="800" height="500" hidden=empty aria-label="Image canvas"></canvas>
+            <section class="canvas-panel" hidden=empty>
+                <CanvasToolbar />
+                <CanvasView image />
+            </section>
         </main>
         <ImageInputLayer input />
     }
 }
 
-/// One line describing the loaded image, until the canvas view (#10) draws it.
+/// One line describing the loaded image.
 #[component]
 fn ImageInfo() -> impl IntoView {
     let current = ImageStore::expect().current();
