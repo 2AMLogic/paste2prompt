@@ -56,8 +56,8 @@ pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};
 pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};
 pub use render::{
-    MAX_EXPORT_SIDE, MAX_IMAGE_PIXELS, MIN_EXPORT_WIDTH, RenderError, RgbaImage, export_size_ok,
-    mark_color, render_export,
+    BadgePlacement, MAX_EXPORT_SIDE, MAX_IMAGE_PIXELS, MIN_EXPORT_WIDTH, PixelBox, RenderError,
+    RgbaImage, badge_position, badge_positions, export_size_ok, mark_color, render_export,
 };
 
 /// The product name, as shown in the UI and in the export caption header.

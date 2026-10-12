@@ -74,7 +74,11 @@ different things:
 
 - **Top:** the original image at full resolution, with marks drawn over it.
   - Each region is drawn with a high-contrast outline and a large numbered
-    badge.
+    badge. The badge sits just outside the region's top-left corner,
+    touching the outline, so it never covers the pixels it labels. Where
+    that doesn't fit on the image it goes beside or below the region, and
+    only when nothing outside fits (e.g. a region filling the image) does it
+    sit on the corner, inside. The canvas uses the same placement.
   - Translate draws a ghost outline at the destination and an arrow to it.
   - Rotate and scale draw a ghost of the transformed outline.
   - Mirror draws a ghost of the mirrored outline, plus a glyph on the
