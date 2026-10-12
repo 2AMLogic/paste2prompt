@@ -1,0 +1,12 @@
+[package]
+name = "paste2prompt-core"
+description = "Edit model, caption text and PNG export for paste2prompt. No browser dependencies."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Keep this crate free of web-sys / wasm-bindgen: it is tested natively with
+# `cargo test` and must build unchanged for wasm32-unknown-unknown.
+[dependencies]
