@@ -1037,6 +1037,13 @@ pub fn name_message(e: &EditError, text: &str) -> Option<String> {
         ),
         NameError::TooLong => format!("Names can be at most {MAX_NAME_CHARS} characters."),
         NameError::InvalidCharacter => "Names can't contain line breaks.".to_owned(),
+        NameError::InvisibleCharacter => {
+            "Names can't contain invisible characters (zero-width or text-direction marks)."
+                .to_owned()
+        }
+        NameError::OnlyDigits => {
+            "A name can't be only a number: it would read as an edit number.".to_owned()
+        }
         NameError::LabelNeedsName => {
             "A label needs a name. Delete the edit to remove it.".to_owned()
         }

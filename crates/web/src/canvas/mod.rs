@@ -397,6 +397,20 @@ pub fn CanvasToolbar() -> impl IntoView {
                 .unwrap_or_default()
         })
     };
+    // Shows the stored name in the field, but only when it differs from
+    // what the field already says, trimmed. Names are stored trimmed, so a
+    // plain `prop:value` binding rewrote `nav ` to `nav` the moment it was
+    // accepted, eating the space before the next word: typing `top nav`
+    // ended as `topnav`. A rejected name doesn't notify at all
+    // (`on_name_input`), so it stays in the field until blur.
+    Effect::new(move |_| {
+        let stored = name_value();
+        if let Some(field) = state.name_input.get()
+            && field.value().trim() != stored
+        {
+            field.set_value(&stored);
+        }
+    });
     let name_error = state.name_error;
     let name_message_text = move || {
         let selected = ctrl.with(Controller::selected);
@@ -410,7 +424,18 @@ pub fn CanvasToolbar() -> impl IntoView {
         let Some(id) = ctrl.with_untracked(Controller::selected) else {
             return;
         };
-        let result = ctrl.try_update(|c| c.set_name(&text)).unwrap_or(Ok(()));
+        // Notify only when the name was accepted: a notification re-runs
+        // the field sync above, which would put the stored name back while
+        // the user is still typing (typing `logo text` with `logo` taken
+        // would stall at `log`; clearing a label's name would snap back).
+        // A rejected name stays in the field, with its message, until blur
+        // puts the stored name back.
+        let result = ctrl
+            .try_maybe_update(|c| {
+                let r = c.set_name(&text);
+                (r.is_ok(), r)
+            })
+            .unwrap_or(Ok(()));
         match result {
             Ok(()) => name_error.set(None),
             Err(e) => match name_message(&e, &text) {
@@ -494,7 +519,6 @@ pub fn CanvasToolbar() -> impl IntoView {
                     maxlength=MAX_NAME_CHARS.to_string()
                     disabled=move || !has_selection()
                     aria-invalid=move || (!name_message_text().is_empty()).to_string()
-                    prop:value=name_value
                     on:focus=move |_| ctrl.update(Controller::end_name_edit)
                     on:blur=on_name_blur
                     on:input=on_name_input

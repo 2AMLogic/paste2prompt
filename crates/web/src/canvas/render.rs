@@ -11,7 +11,9 @@
 //! light ([`SELECTION_RING_OUTER`]), so it never depends on the edit's
 //! color and shows on light and dark images alike.
 
-use paste2prompt_core::{ImageSize, MirrorAxis, Op, badge_positions};
+use paste2prompt_core::{
+    ImageSize, MirrorAxis, Op, badge_max_width, badge_positions, fit_badge_label,
+};
 use wasm_bindgen::JsValue;
 use web_sys::CanvasRenderingContext2d;
 
@@ -87,10 +89,26 @@ pub fn draw(
     // region where it fits, so the badge never hides what it labels. The
     // badge is a fixed size on screen, so its size in image pixels depends on
     // the zoom. A named region's badge (`1 logo`) is a wider capsule.
+    //
+    // A long name is cut short with `…` by the export's rule
+    // (`badge_max_width`), applied on screen: the cap is in CSS pixels of
+    // the image as displayed, so the canvas badge never outgrows the image
+    // in view. The status line and caption keep the full name.
     let per_px = 1.0 / view.scale.max(f64::MIN_POSITIVE);
     let d = 2.0 * BADGE_RADIUS + BADGE_RING;
-    let badges = badge_positions(doc, |number, name| {
-        let w = badge_width(ctx, &badge_label(number, name)) + BADGE_RING;
+    let max_w = badge_max_width(iw * view.scale, d);
+    let labels: Vec<String> = doc
+        .edits()
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            fit_badge_label(i + 1, e.name(), max_w, |label| {
+                badge_width(ctx, label) + BADGE_RING
+            })
+        })
+        .collect();
+    let badges = badge_positions(doc, |number, _| {
+        let w = badge_width(ctx, &labels[number - 1]) + BADGE_RING;
         (w * per_px, d * per_px)
     });
 
@@ -114,7 +132,7 @@ pub fn draw(
         badge(
             ctx,
             view.to_screen(placed.center),
-            &badge_label(number, edit.name()),
+            &labels[i],
             &color,
             is_selected,
         )?;
@@ -277,15 +295,6 @@ fn mirror_glyph(
     arrow(ctx, c, flip[0], color);
     arrow(ctx, c, flip[1], color);
     Ok(())
-}
-
-/// The badge text: the number, then the region's name if it has one
-/// (`1 logo`), as on the export's badge.
-fn badge_label(number: usize, name: Option<&str>) -> String {
-    match name {
-        Some(name) => format!("{number} {name}"),
-        None => number.to_string(),
-    }
 }
 
 /// The badge's width on screen (CSS pixels, its ring excluded): a circle

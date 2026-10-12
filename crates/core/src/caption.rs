@@ -1067,11 +1067,11 @@ mod tests {
         paste2prompt edit list (user-authored)
         Coordinates are % of image width/height. Edits refer to the original image.
         Named regions can be referred to by name in the instructions and in your reply.
-        #1  label      "nav bar" (0%,0%)-(100%,8%)                               →  named "nav bar"
-        #2  translate  "logo" (12%,30%)-(40%,52%)                                →  move right 15%, up 4%
-        #3  rotate     "hero image" around (30%,20%) within (10%,10%)-(70%,40%)  →  rotate 90° clockwise about bounding-box center (40%,25%); also "keep it crisp"
-        #4  label      "search box" (60%,60%)-(80%,70%)                          →  named "search box"; also "leave as is"
-        #5  hint       region (30%,60%)-(40%,70%)                                →  "unnamed regions still say region"
+        #1  label      "nav bar" (0%,0%)-(100%,8%)                             →  named "nav bar"
+        #2  translate  "logo" (12%,30%)-(40%,52%)                              →  move right 15%, up 4%
+        #3  rotate     "hero image" around (32%,20%) within (6%,5%)-(70%,41%)  →  rotate 90° clockwise about bounding-box center (38%,23%); also "keep it crisp"
+        #4  label      "search box" (60%,60%)-(80%,70%)                        →  named "search box"; also "leave as is"
+        #5  hint       region (30%,60%)-(40%,70%)                              →  "unnamed regions still say region"
         Overall: put the logo next to the search box
         "#);
         let lines = caption_lines(ed.document());

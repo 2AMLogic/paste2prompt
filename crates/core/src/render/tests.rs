@@ -345,8 +345,8 @@ fn a_named_badge_is_wider_and_shows_the_name() {
     let named = scale.badge_extent(&mut text, 2, Some("logo"));
     assert_eq!(plain.1, named.1, "same height");
     assert!(named.0 > plain.0 * 2.0, "{named:?} vs {plain:?}");
-    assert_eq!(marks::badge_label(2, Some("logo")), "2 logo");
-    assert_eq!(marks::badge_label(12, None), "12");
+    assert_eq!(badge_label(2, Some("logo")), "2 logo");
+    assert_eq!(badge_label(12, None), "12");
     // Unmappable letters in a name are drawn as U+FFFD, like any text.
     assert_eq!(text.drawable("logo 中文"), "logo \u{FFFD}");
 
@@ -363,6 +363,100 @@ fn a_named_badge_is_wider_and_shows_the_name() {
         caption.contains(r#"#2  translate  "logo" (12%,30%)-(40%,48%)"#),
         "{caption}"
     );
+}
+
+/// Two long names (the worst case, 40 `W`s, and a plain 34-character one)
+/// on a small and a large image, each edit's region in a different spot.
+fn fixture_long_names(width: u32, height: u32) -> (RgbaImage, Document) {
+    let image = test_image(width, height);
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_named_edit(
+        rect(0.55, 0.30, 0.70, 0.45),
+        Op::Label,
+        None,
+        Some("W".repeat(40)),
+    )
+    .unwrap();
+    ed.add_named_edit(
+        rect(0.10, 0.60, 0.30, 0.80),
+        Op::Hint,
+        Some("tidy".into()),
+        Some("a moderately long region name here".into()),
+    )
+    .unwrap();
+    (image, ed.into_document())
+}
+
+#[test]
+fn long_names_are_cut_short_on_the_badge_only() {
+    for (w, h) in [(400, 300), (1280, 720)] {
+        let (image, doc) = fixture_long_names(w, h);
+        let size = size_of(&image);
+        let scale = MarkScale::for_image(size);
+        let mut text = Text::new();
+        let badges = badge_positions(&doc, |n, name| scale.badge_extent(&mut text, n, name));
+        for (i, (edit, b)) in doc.edits().iter().zip(&badges).enumerate() {
+            let label = scale.badge_text(&mut text, i + 1, edit.name());
+            eprintln!("{w}x{h}: {label:?} {b:?} max {}", scale.badge_max);
+            // The 40 `W`s are cut on both; the 34 plain letters fit on the
+            // large image.
+            let cut = i == 0 || w == 400;
+            assert_eq!(label.ends_with('\u{2026}'), cut, "{w}x{h}: {label:?}");
+            assert!(label.starts_with(&format!("{} ", i + 1)), "{label:?}");
+            assert!(
+                label.chars().count() > 6,
+                "keeps some of the name: {label:?}"
+            );
+            assert!(
+                b.size.0 <= f64::from(scale.badge_max) + 1e-9,
+                "{w}x{h}: {:?} wider than {}",
+                b.size,
+                scale.badge_max
+            );
+            assert!(b.inside(size), "{w}x{h}: {b:?} leaves the image");
+            assert!(b.outside, "{w}x{h}: {b:?} covers its region");
+        }
+        // The caption keeps both names whole.
+        let caption = Caption::from_document(&doc).to_plain_text();
+        assert!(
+            caption.contains(&format!("\"{}\"", "W".repeat(40))),
+            "{caption}"
+        );
+        assert!(
+            caption.contains("\"a moderately long region name here\""),
+            "{caption}"
+        );
+        // And the export renders.
+        render_export(&image, &doc).unwrap();
+    }
+    // A name that fits isn't touched.
+    let scale = MarkScale::for_image(ImageSize::new(400, 300).unwrap());
+    assert_eq!(
+        scale.badge_text(&mut Text::new(), 3, Some("logo")),
+        "3 logo"
+    );
+}
+
+#[test]
+fn fitting_a_badge_label() {
+    // One unit per character.
+    let w = |s: &str| s.chars().count() as f64;
+    assert_eq!(fit_badge_label(7, None, 0.0, w), "7");
+    assert_eq!(fit_badge_label(1, Some("logo"), 6.0, w), "1 logo");
+    assert_eq!(
+        fit_badge_label(1, Some("logotype"), 7.0, w),
+        "1 logo\u{2026}"
+    );
+    // No dangling space before the ellipsis.
+    assert_eq!(fit_badge_label(1, Some("ab cdef"), 6.0, w), "1 ab\u{2026}");
+    // Too narrow for even one letter: the number and the ellipsis.
+    assert_eq!(fit_badge_label(12, Some("logo"), 2.0, w), "12 \u{2026}");
+    // The cap: 40% of the width, 6 to 12 badge heights, never wider than
+    // the image.
+    assert_eq!(badge_max_width(1000.0, 40.0), 400.0);
+    assert_eq!(badge_max_width(400.0, 40.0), 240.0);
+    assert_eq!(badge_max_width(4000.0, 40.0), 480.0);
+    assert_eq!(badge_max_width(100.0, 40.0), 100.0);
 }
 
 #[test]

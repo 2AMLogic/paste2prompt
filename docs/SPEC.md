@@ -74,8 +74,11 @@ changes nothing. Type the name in the name field next to the hint field,
 or press `N` to focus it for the selected edit. A new label starts as
 `label 1` (the first free number), selected so typing replaces it.
 
-- Names are trimmed, at most 40 characters, and can't contain line breaks.
-  A blank name is no name; a label must keep one.
+- Names are trimmed, at most 40 characters, and can't contain line breaks
+  or invisible format characters (zero-width or text-direction marks), or
+  be only digits (`1 2` would read as two badge numbers). A blank name is
+  no name; a label must keep one. A rejected name stays in the field, with
+  its message, until the field loses focus.
 - Names are unique within the image, compared case-insensitively, so "the
   logo" is never ambiguous. A duplicate is rejected with a message under the
   name field.
@@ -126,7 +129,11 @@ different things:
     mirror axis.
   - A named region's badge shows its number and its name (`1 logo`), so the
     mark itself carries the name the caption and the reply use. A label
-    draws only its outline and badge, with no ghost.
+    draws only its outline and badge, with no ghost. The wide named badge
+    goes above the region, flush with its left (or right) edge, so it sits
+    over its own region's span rather than a neighbour's; a long name is
+    cut short with `…` on the badge (at most 40% of the image width,
+    within 6–12 badge heights), and the caption keeps it whole.
 - **Bottom:** a caption band in a clearly separate color, with a fixed header:
   ```
   paste2prompt edit list (user-authored)

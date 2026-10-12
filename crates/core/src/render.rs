@@ -43,10 +43,13 @@ use tiny_skia::{FillRule, Mask, PathBuilder, Pixmap, Transform};
 use crate::caption::{ARROW, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines};
 use crate::document::Document;
 use crate::geometry::ImageSize;
-use marks::{Badge, MarkScale, Marks, badge_label, badge_width, draw_badge};
+use marks::{Badge, MarkScale, Marks, badge_width, draw_badge};
 use text::{Block, Style, Text};
 
-pub use placement::{BadgePlacement, PixelBox, badge_position, badge_positions};
+pub use placement::{
+    BadgePlacement, PixelBox, badge_label, badge_max_width, badge_position, badge_positions,
+    fit_badge_label,
+};
 
 /// The narrowest export. A narrower image is centered on padding so the
 /// caption stays legible (spec: "a minimum width so it stays legible on

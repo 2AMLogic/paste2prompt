@@ -9,6 +9,7 @@ use tiny_skia::{
     Transform,
 };
 
+use super::placement::{badge_label, badge_max_width, fit_badge_label};
 use super::text::{Style, Text};
 use crate::{Edit, ImageSize, MirrorAxis, Op, Region};
 
@@ -29,6 +30,9 @@ pub(super) struct MarkScale {
     pub halo: f32,
     /// Height (and minimum width) of a numbered badge.
     pub badge: f32,
+    /// The widest a solid badge may be, ring included
+    /// ([`super::badge_max_width`]); a longer name is cut short with `…`.
+    pub badge_max: f32,
 }
 
 impl MarkScale {
@@ -39,11 +43,15 @@ impl MarkScale {
         let stroke = (k * 0.0035).max(3.0);
         let halo = stroke + 2.0 * (stroke * 0.6).max(1.5);
         let badge = (k * 0.045).max(28.0);
-        Self {
+        let mut scale = Self {
             stroke,
             halo,
             badge,
-        }
+            badge_max: 0.0,
+        };
+        let full_height = f64::from(badge + 2.0 * scale.solid_ring());
+        scale.badge_max = badge_max_width(f64::from(size.width()), full_height) as f32;
+        scale
     }
 
     /// Width of the ring around a solid (source) badge.
@@ -51,12 +59,22 @@ impl MarkScale {
         (self.halo - self.stroke) / 2.0 + 1.0
     }
 
+    /// The text of edit `number`'s solid badge: [`badge_label`], its name
+    /// cut short to keep the badge within [`Self::badge_max`].
+    pub fn badge_text(self, text: &mut Text, number: usize, name: Option<&str>) -> String {
+        let ring = 2.0 * self.solid_ring();
+        fit_badge_label(number, name, f64::from(self.badge_max), |label| {
+            f64::from(badge_width(text, label, self.badge) + ring)
+        })
+    }
+
     /// The full (width, height) of edit `number`'s solid badge (with its
-    /// region's `name`, if any), ring included, in image pixels: what
-    /// [`super::badge_positions`] places.
+    /// region's `name`, if any, as [`Self::badge_text`] shows it), ring
+    /// included, in image pixels: what [`super::badge_positions`] places.
     pub fn badge_extent(self, text: &mut Text, number: usize, name: Option<&str>) -> (f64, f64) {
         let ring = 2.0 * self.solid_ring();
-        let w = badge_width(text, &badge_label(number, name), self.badge) + ring;
+        let label = self.badge_text(text, number, name);
+        let w = badge_width(text, &label, self.badge) + ring;
         (f64::from(w), f64::from(self.badge + ring))
     }
 }
@@ -304,7 +322,11 @@ impl Marks<'_> {
         let s = self.scale;
         let h = if hollow { s.badge * 0.8 } else { s.badge };
         let ring = if hollow { s.stroke } else { s.solid_ring() };
-        let label = badge_label(number, name);
+        let label = if hollow {
+            badge_label(number, name)
+        } else {
+            s.badge_text(self.text, number, name)
+        };
         let w = badge_width(self.text, &label, h);
         let (iw, ih) = (self.size.width() as f32, self.size.height() as f32);
         let fit = |v: f64, half: f32, max: f32| {
@@ -334,7 +356,7 @@ impl Marks<'_> {
 /// A numbered badge: a capsule with a ring around it and the number (and
 /// the region's name, if it has one) inside.
 pub(super) struct Badge<'a> {
-    /// The text inside: [`badge_label`].
+    /// The text inside: [`MarkScale::badge_text`] (or [`badge_label`]).
     pub label: &'a str,
     /// Center, in canvas pixels.
     pub center: (f32, f32),
@@ -351,16 +373,6 @@ fn badge_style(height: f32) -> Style {
     Style {
         size: height * 0.6,
         bold: true,
-    }
-}
-
-/// The text of edit `number`'s badge: the number, then the region's name
-/// if it has one (`1 logo`), so the mark itself carries the name a caption
-/// row or a reply refers to.
-pub(super) fn badge_label(number: usize, name: Option<&str>) -> String {
-    match name {
-        Some(name) => format!("{number} {name}"),
-        None => number.to_string(),
     }
 }
 

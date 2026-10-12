@@ -110,7 +110,10 @@ impl TryFrom<EditRepr> for Edit {
 /// Checks and normalizes a region name: surrounding whitespace is trimmed,
 /// and an empty name is no name. A name may have at most
 /// [`MAX_NAME_CHARS`] characters and no line break or other control
-/// character, so it always stays on its caption row.
+/// character, so it always stays on its caption row; no invisible format
+/// character ([`is_format_char`]), which can't be drawn and can reorder the
+/// rest of a copied caption row; and it can't be only digits, which would
+/// read as a second badge number (`1 2`).
 pub(crate) fn normalize_name(name: Option<String>) -> Result<Option<String>, NameError> {
     let Some(name) = name else { return Ok(None) };
     let trimmed = name.trim();
@@ -123,6 +126,15 @@ pub(crate) fn normalize_name(name: Option<String>) -> Result<Option<String>, Nam
     {
         return Err(NameError::InvalidCharacter);
     }
+    if trimmed.chars().any(is_format_char) {
+        return Err(NameError::InvisibleCharacter);
+    }
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_digit() || c.is_whitespace())
+    {
+        return Err(NameError::OnlyDigits);
+    }
     if trimmed.chars().count() > MAX_NAME_CHARS {
         return Err(NameError::TooLong);
     }
@@ -131,6 +143,38 @@ pub(crate) fn normalize_name(name: Option<String>) -> Result<Option<String>, Nam
     } else {
         trimmed.to_owned()
     }))
+}
+
+/// Whether `c` is a Unicode format character (general category Cf): soft
+/// hyphen, zero-width space and joiners, bidi marks, embeddings, overrides
+/// and isolates (U+202E reverses the text after it), word joiner, BOM,
+/// interlinear annotation and tag characters, and the rest of the category
+/// as of Unicode 16. None of them draws a glyph of its own.
+pub(crate) fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{AD}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61C}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 /// The form two names are compared in: case-insensitive, with whitespace
@@ -389,6 +433,10 @@ pub enum NameError {
     TooLong,
     /// Contains a line break or another control character.
     InvalidCharacter,
+    /// Contains an invisible format character (zero-width or bidi control).
+    InvisibleCharacter,
+    /// Only digits, which would read as an edit number.
+    OnlyDigits,
     /// Another edit in the document already has this name, ignoring case.
     Duplicate,
     /// An [`Op::Label`] edit with no name: a label is only its name.
@@ -400,6 +448,10 @@ impl fmt::Display for NameError {
         match self {
             Self::TooLong => write!(f, "a name can be at most {MAX_NAME_CHARS} characters"),
             Self::InvalidCharacter => f.write_str("a name can't contain a line break"),
+            Self::InvisibleCharacter => {
+                f.write_str("a name can't contain an invisible formatting character")
+            }
+            Self::OnlyDigits => f.write_str("a name can't be only digits"),
             Self::Duplicate => f.write_str("another region already has this name"),
             Self::LabelNeedsName => f.write_str("a label needs a name"),
         }
@@ -696,11 +748,14 @@ mod tests {
                 Err(DocumentError::Json(_))
             ));
         }
-        // Too long, or with a line break.
+        // Too long, with a line break or a bidi override, or only digits.
         for bad in [
             "x".repeat(MAX_NAME_CHARS + 1),
             "nav\nbar".into(),
             "a\u{2028}b".into(),
+            "nav\u{202E}rab".into(),
+            "a\u{200B}b".into(),
+            "42".into(),
         ] {
             assert!(matches!(
                 Document::from_json(&named(&bad)),
@@ -739,6 +794,34 @@ mod tests {
                 Err(NameError::InvalidCharacter),
                 "{bad:?}"
             );
+        }
+        // Invisible format characters (Cf): zero-width, bidi controls, BOM.
+        for bad in [
+            "a\u{200B}b",
+            "a\u{200D}b",
+            "a\u{200F}b",
+            "\u{202E}logo",
+            "a\u{2066}b\u{2069}",
+            "\u{FEFF}logo",
+            "a\u{AD}b",
+            "a\u{E0041}b",
+        ] {
+            assert_eq!(
+                normalize_name(Some(bad.into())),
+                Err(NameError::InvisibleCharacter),
+                "{bad:?}"
+            );
+        }
+        // Digits only would read as a second number: `1 2`.
+        for bad in ["2", "12", " 007 ", "1 2"] {
+            assert_eq!(
+                normalize_name(Some(bad.into())),
+                Err(NameError::OnlyDigits),
+                "{bad:?}"
+            );
+        }
+        for ok in ["2nd card", "card 2", "#2", "\u{0662}", "Größe"] {
+            assert!(normalize_name(Some(ok.into())).is_ok(), "{ok:?}");
         }
         assert_eq!(name_key("The  \"Logo\""), name_key("the 'logo'"));
         assert_ne!(name_key("logo"), name_key("logos"));

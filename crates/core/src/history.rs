@@ -1364,6 +1364,14 @@ mod tests {
             ed.set_name(a, Some("two\nlines".into())),
             Err(EditError::InvalidName(NameError::InvalidCharacter))
         );
+        assert_eq!(
+            ed.set_name(a, Some("\u{202E}ok".into())),
+            Err(EditError::InvalidName(NameError::InvisibleCharacter))
+        );
+        assert_eq!(
+            ed.set_name(a, Some("2".into())),
+            Err(EditError::InvalidName(NameError::OnlyDigits))
+        );
         assert_eq!(name_of(&ed, a).as_deref(), Some("ok"));
         ed.set_name(a, Some("okay".into())).unwrap();
         // Still one step: undo clears the whole typing session.
