@@ -35,6 +35,9 @@
 //! [`Document`]: the original image with outlines, numbered badges and
 //! ghosts, and the caption block in a band below it, laid out with the
 //! bundled Inter font. [`mark_color`] gives each edit's color.
+//! [`export_size_ok`] tells, from the image's size alone, whether
+//! `render_export` would accept it, so a caller can refuse an oversized image
+//! before copying its pixels.
 
 #![warn(missing_docs)]
 
@@ -53,8 +56,8 @@ pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};
 pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};
 pub use render::{
-    MAX_EXPORT_SIDE, MAX_IMAGE_PIXELS, MIN_EXPORT_WIDTH, RenderError, RgbaImage, mark_color,
-    render_export,
+    MAX_EXPORT_SIDE, MAX_IMAGE_PIXELS, MIN_EXPORT_WIDTH, RenderError, RgbaImage, export_size_ok,
+    mark_color, render_export,
 };
 
 /// The product name, as shown in the UI and in the export caption header.
