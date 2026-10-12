@@ -19,8 +19,11 @@ js-sys.workspace = true
 workspace = true
 features = [
     "Blob",
+    "BlobPropertyBag",
     "CanvasRenderingContext2d",
+    "Clipboard",
     "ClipboardEvent",
+    "ClipboardItem",
     "DataTransfer",
     "DataTransferItem",
     "DataTransferItemList",
@@ -30,6 +33,7 @@ features = [
     "Element",
     "File",
     "FileList",
+    "HtmlAnchorElement",
     "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
@@ -38,7 +42,10 @@ features = [
     "KeyboardEvent",
     "MediaQueryList",
     "MouseEvent",
+    "Navigator",
     "PointerEvent",
     "ResizeObserver",
+    "Selection",
+    "Url",
     "Window",
 ]

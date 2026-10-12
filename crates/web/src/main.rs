@@ -1,6 +1,7 @@
 //! Browser entry point. Built with `trunk`; see the README for how to run it.
 
 mod canvas;
+mod export;
 mod image;
 mod input;
 
@@ -8,6 +9,7 @@ use leptos::prelude::*;
 use paste2prompt_core::APP_NAME;
 
 use crate::canvas::{CanvasState, CanvasToolbar, CanvasView, SourceImage};
+use crate::export::{DocumentSource, ExportToolbar, Exporter};
 use crate::image::ImageStore;
 use crate::input::{ImageInput, ImageInputLayer, OpenButton};
 
@@ -23,9 +25,20 @@ fn App() -> impl IntoView {
     let store = ImageStore::provide();
     let canvas = CanvasState::provide();
     let input = ImageInput::new(store, canvas.has_edits());
+    // Exports read the canvas editor's document (edits and hints) at the
+    // gesture. `None` (no session yet) falls back to an empty document.
+    let controller = canvas.controller;
+    let exporter = Exporter::new(
+        store,
+        DocumentSource::new(move || {
+            controller.with_untracked(|c| c.editor().map(|e| e.document().clone()))
+        }),
+    );
     let current = store.current();
     // Debug builds only: a generated test card, shown until a real image is
-    // loaded. Release builds compile this out.
+    // loaded. Release builds compile this out. It is not in `ImageStore`, so
+    // the export actions stay disabled while it is showing: load a real image
+    // to try them.
     #[cfg(debug_assertions)]
     let test_pattern = RwSignal::new_local(None::<SourceImage>);
     #[cfg(debug_assertions)]
@@ -57,6 +70,7 @@ fn App() -> impl IntoView {
         <header>
             <h1>{APP_NAME}</h1>
             <OpenButton input />
+            <ExportToolbar exporter />
         </header>
         <main>
             <Show when=empty fallback=move || view! { <ImageInfo /> }>
