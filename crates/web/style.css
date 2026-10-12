@@ -80,6 +80,33 @@ h1 {
   flex: 1 1 14rem;
 }
 
+/* The name field and, under it, why the last name typed was rejected. */
+.name-field {
+  display: inline-flex;
+  flex-direction: column;
+  flex: 0 1 12rem;
+  min-width: 9rem;
+}
+
+.name-input {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+}
+
+.name-input[aria-invalid="true"] {
+  outline: 2px solid #de1923;
+  outline-offset: 1px;
+}
+
+.name-error {
+  color: #de1923;
+  font-size: 0.85em;
+}
+
+.name-error:empty {
+  display: none;
+}
+
 .canvas-status {
   opacity: 0.75;
   font-variant-numeric: tabular-nums;
@@ -217,6 +244,11 @@ h1 {
 
 .history-op {
   font-weight: 600;
+}
+
+.history-name {
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .history-summary {

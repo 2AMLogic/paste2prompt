@@ -15,11 +15,13 @@
 //!   gesture fold into one move, so a drag-reorder that ends where it started
 //!   also leaves no step.
 //! - **Typing.** Outside a gesture, only text typing coalesces: consecutive
-//!   [`Editor::set_hint`] calls on the *same* edit, or consecutive
+//!   [`Editor::set_hint`] calls on the *same* edit, consecutive
+//!   [`Editor::set_name`] calls on the *same* edit, or consecutive
 //!   [`Editor::set_instructions`] calls, merge into the latest step, so typing
 //!   is one step rather than one per key. Anything else (an add, a delete, a
-//!   move, [`Editor::set_op`], [`Editor::set_region`], a hint on a different edit,
-//!   undo, redo, a gesture, or [`Editor::break_coalescing`]) closes that step.
+//!   move, [`Editor::set_op`], [`Editor::set_region`], a hint or name on a
+//!   different edit, a hint after a name or the reverse, undo, redo, a
+//!   gesture, or [`Editor::break_coalescing`]) closes that step.
 //!
 //! Outside a gesture, every [`Editor::set_op`], [`Editor::set_region`] and
 //! [`Editor::move_edit`] is its own step, so discrete actions such as pressing `M` to switch the mirror
@@ -34,7 +36,7 @@
 
 use std::fmt;
 
-use crate::document::{Document, Edit, EditId, normalize_hint};
+use crate::document::{Document, Edit, EditId, NameError, normalize_hint, normalize_name};
 use crate::geometry::{ImageSize, Region};
 use crate::op::{Op, OpError};
 
@@ -79,6 +81,7 @@ enum Target {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Typing {
     Hint(EditId),
+    Name(EditId),
     Instructions,
 }
 
@@ -232,15 +235,32 @@ impl Editor {
     /// Appends a new edit and returns its id. The region must already be in
     /// original-image coordinates; there is no way to build one from another
     /// edit's result.
+    ///
+    /// An [`Op::Label`] needs a name, so use
+    /// [`add_named_edit`](Self::add_named_edit) for one.
     pub fn add_edit(
         &mut self,
         region: Region,
         op: Op,
         hint: Option<String>,
     ) -> Result<EditId, EditError> {
+        self.add_named_edit(region, op, hint, None)
+    }
+
+    /// [`add_edit`](Self::add_edit) with a region name. The name is checked
+    /// like [`set_name`](Self::set_name)'s; an [`Op::Label`] must have one.
+    pub fn add_named_edit(
+        &mut self,
+        region: Region,
+        op: Op,
+        hint: Option<String>,
+        name: Option<String>,
+    ) -> Result<EditId, EditError> {
         op.validate()?;
+        let name = self.check_name(None, &op, name)?;
         let id = self.doc.alloc_id().ok_or(EditError::IdsExhausted)?;
-        let edit = Edit::new(id, region, op, hint);
+        let mut edit = Edit::new(id, region, op, hint);
+        *edit.name_mut() = name;
         let index = self.doc.edits().len();
         self.commit(Change::Insert { index, edit }, None);
         Ok(id)
@@ -258,8 +278,14 @@ impl Editor {
     /// destination, or a different kind of op altogether.
     ///
     /// Outside a gesture each call is its own undo step (e.g. each `M` press).
+    /// Turning an unnamed edit into an [`Op::Label`] is rejected: name it
+    /// first.
     pub fn set_op(&mut self, id: EditId, op: Op) -> Result<(), EditError> {
         op.validate()?;
+        let edit = self.doc.edit(id).ok_or(EditError::UnknownEdit(id))?;
+        if op == Op::Label && edit.name().is_none() {
+            return Err(NameError::LabelNeedsName.into());
+        }
         self.update(id, None, |e| *e.op_mut() = op)
     }
 
@@ -271,6 +297,35 @@ impl Editor {
         self.update(id, Some(Typing::Hint(id)), |e| {
             *e.hint_mut() = normalize_hint(hint);
         })
+    }
+
+    /// Sets or clears an edit's region name. The name is trimmed, and an
+    /// empty one clears it. Rejected, changing nothing, when it is longer than
+    /// [`MAX_NAME_CHARS`](crate::MAX_NAME_CHARS) characters, has a line
+    /// break, is another edit's name (ignoring case), or would leave an
+    /// [`Op::Label`] edit unnamed.
+    ///
+    /// Outside a gesture, consecutive calls for the same edit are one undo
+    /// step (typing). A rejected call doesn't end that step.
+    pub fn set_name(&mut self, id: EditId, name: Option<String>) -> Result<(), EditError> {
+        let edit = self.doc.edit(id).ok_or(EditError::UnknownEdit(id))?;
+        let name = self.check_name(Some(id), edit.op(), name)?;
+        self.update(id, Some(Typing::Name(id)), |e| *e.name_mut() = name)
+    }
+
+    /// Normalizes `name` for edit `id` (`None` for a new edit) with op `op`.
+    fn check_name(
+        &self,
+        id: Option<EditId>,
+        op: &Op,
+        name: Option<String>,
+    ) -> Result<Option<String>, EditError> {
+        let name = normalize_name(name)?;
+        match &name {
+            None if *op == Op::Label => Err(NameError::LabelNeedsName.into()),
+            Some(n) if self.doc.edit_named(n, id).is_some() => Err(NameError::Duplicate.into()),
+            _ => Ok(name),
+        }
     }
 
     /// Deletes an edit, returning it. Undo restores it at the same position
@@ -476,6 +531,8 @@ pub enum EditError {
     UnknownEdit(EditId),
     /// The op's parameters are invalid.
     InvalidOp(OpError),
+    /// The region name is invalid or already taken.
+    InvalidName(NameError),
     /// The document has used every edit id (2^53 of them) and can't add more.
     IdsExhausted,
     /// A position past the end of the edit list.
@@ -493,11 +550,18 @@ impl From<OpError> for EditError {
     }
 }
 
+impl From<NameError> for EditError {
+    fn from(e: NameError) -> Self {
+        Self::InvalidName(e)
+    }
+}
+
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownEdit(id) => write!(f, "no edit with id {id}"),
             Self::InvalidOp(e) => write!(f, "invalid operation: {e}"),
+            Self::InvalidName(e) => write!(f, "invalid name: {e}"),
             Self::IdsExhausted => f.write_str("no edit ids left in this document"),
             Self::IndexOutOfRange { index, len } => {
                 write!(f, "index {index} is out of range for {len} edits")
@@ -510,6 +574,7 @@ impl std::error::Error for EditError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidOp(e) => Some(e),
+            Self::InvalidName(e) => Some(e),
             Self::UnknownEdit(_) | Self::IdsExhausted | Self::IndexOutOfRange { .. } => None,
         }
     }
@@ -1213,5 +1278,162 @@ mod tests {
         let mut ed2 = Editor::from_document(doc);
         let b = ed2.add_edit(region(0.5), Op::Hint, None).unwrap();
         assert_ne!(a, b);
+    }
+
+    fn name_of(ed: &Editor, id: EditId) -> Option<String> {
+        ed.document().edit(id).unwrap().name().map(str::to_owned)
+    }
+
+    #[test]
+    fn name_typing_is_one_undo_step() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.1), None).unwrap();
+        for typed in ["l", "lo", "log", "logo"] {
+            ed.set_name(a, Some(typed.into())).unwrap();
+        }
+        assert_eq!(name_of(&ed, a).as_deref(), Some("logo"));
+        assert!(ed.undo());
+        assert_eq!(name_of(&ed, a), None);
+        assert_eq!(ids(&ed), [a], "undoing the name keeps the edit");
+        assert!(ed.redo());
+        assert_eq!(name_of(&ed, a).as_deref(), Some("logo"));
+
+        // A break (focus change) starts a new step; so does a hint.
+        ed.break_coalescing();
+        ed.set_name(a, Some("logo mark".into())).unwrap();
+        ed.set_hint(a, Some("bigger".into())).unwrap();
+        ed.set_name(a, Some("brand".into())).unwrap();
+        assert!(ed.undo());
+        assert_eq!(name_of(&ed, a).as_deref(), Some("logo mark"));
+        assert!(ed.undo());
+        assert_eq!(ed.document().edit(a).unwrap().hint(), None);
+        assert!(ed.undo());
+        assert_eq!(name_of(&ed, a).as_deref(), Some("logo"));
+    }
+
+    #[test]
+    fn names_on_different_edits_are_separate_steps() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), Op::Hint, None).unwrap();
+        let b = ed.add_edit(region(0.5), Op::Hint, None).unwrap();
+        ed.set_name(a, Some("a".into())).unwrap();
+        ed.set_name(b, Some("b".into())).unwrap();
+        ed.undo();
+        assert_eq!(name_of(&ed, a).as_deref(), Some("a"));
+        assert_eq!(name_of(&ed, b), None);
+    }
+
+    #[test]
+    fn duplicate_names_are_rejected_ignoring_case() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.1), None).unwrap();
+        let b = ed.add_edit(region(0.5), Op::Hint, None).unwrap();
+        ed.set_name(a, Some("Logo".into())).unwrap();
+        for dup in ["logo", "LOGO", "  logo  ", "lOgO"] {
+            assert_eq!(
+                ed.set_name(b, Some(dup.into())),
+                Err(EditError::InvalidName(NameError::Duplicate)),
+                "{dup:?}"
+            );
+        }
+        assert_eq!(name_of(&ed, b), None);
+        // Renaming an edit to its own name, in another case, is fine.
+        ed.set_name(a, Some("LOGO".into())).unwrap();
+        assert_eq!(name_of(&ed, a).as_deref(), Some("LOGO"));
+        // A new edit can't take it either.
+        assert_eq!(
+            ed.add_named_edit(region(0.3), Op::Label, None, Some("logo".into())),
+            Err(EditError::InvalidName(NameError::Duplicate))
+        );
+        // Once the first is renamed, the name is free.
+        ed.set_name(a, Some("brand".into())).unwrap();
+        ed.set_name(b, Some("logo".into())).unwrap();
+        assert_eq!(name_of(&ed, b).as_deref(), Some("logo"));
+    }
+
+    #[test]
+    fn invalid_names_change_nothing_and_keep_the_typing_step() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), Op::Hint, None).unwrap();
+        ed.set_name(a, Some("ok".into())).unwrap();
+        assert_eq!(
+            ed.set_name(a, Some("x".repeat(41))),
+            Err(EditError::InvalidName(NameError::TooLong))
+        );
+        assert_eq!(
+            ed.set_name(a, Some("two\nlines".into())),
+            Err(EditError::InvalidName(NameError::InvalidCharacter))
+        );
+        assert_eq!(
+            ed.set_name(a, Some("\u{202E}ok".into())),
+            Err(EditError::InvalidName(NameError::InvisibleCharacter))
+        );
+        assert_eq!(
+            ed.set_name(a, Some("2".into())),
+            Err(EditError::InvalidName(NameError::OnlyDigits))
+        );
+        assert_eq!(name_of(&ed, a).as_deref(), Some("ok"));
+        ed.set_name(a, Some("okay".into())).unwrap();
+        // Still one step: undo clears the whole typing session.
+        ed.undo();
+        assert_eq!(name_of(&ed, a), None);
+        // Whitespace is trimmed; blank clears.
+        ed.set_name(a, Some("  spaced  ".into())).unwrap();
+        assert_eq!(name_of(&ed, a).as_deref(), Some("spaced"));
+        ed.set_name(a, Some("   ".into())).unwrap();
+        assert_eq!(name_of(&ed, a), None);
+        ed.delete_edit(a).unwrap();
+        assert_eq!(
+            ed.set_name(a, Some("x".into())),
+            Err(EditError::UnknownEdit(a))
+        );
+    }
+
+    #[test]
+    fn labels_always_have_a_name() {
+        let mut ed = editor();
+        assert_eq!(
+            ed.add_edit(region(0.1), Op::Label, None),
+            Err(EditError::InvalidName(NameError::LabelNeedsName))
+        );
+        assert!(ed.document().edits().is_empty());
+        let l = ed
+            .add_named_edit(region(0.1), Op::Label, None, Some("nav".into()))
+            .unwrap();
+        assert_eq!(
+            ed.set_name(l, None),
+            Err(EditError::InvalidName(NameError::LabelNeedsName))
+        );
+        assert_eq!(
+            ed.set_name(l, Some(" ".into())),
+            Err(EditError::InvalidName(NameError::LabelNeedsName))
+        );
+        // An unnamed edit can't become a label; a named one can, and back.
+        let t = ed.add_edit(region(0.5), translate(0.1), None).unwrap();
+        assert_eq!(
+            ed.set_op(t, Op::Label),
+            Err(EditError::InvalidName(NameError::LabelNeedsName))
+        );
+        ed.set_name(t, Some("box".into())).unwrap();
+        ed.set_op(t, Op::Label).unwrap();
+        ed.set_op(l, Op::Hint).unwrap();
+        ed.set_name(l, None).unwrap();
+        // Undo walks it all back.
+        while ed.undo() {}
+        assert!(ed.document().edits().is_empty());
+    }
+
+    #[test]
+    fn names_survive_json_and_undo_after_reload() {
+        let mut ed = editor();
+        let a = ed
+            .add_named_edit(region(0.1), Op::Label, None, Some("header".into()))
+            .unwrap();
+        let doc = Document::from_json(&ed.document().to_json()).unwrap();
+        assert_eq!(doc.edit(a).unwrap().name(), Some("header"));
+        let mut ed2 = Editor::from_document(doc);
+        ed2.set_name(a, Some("top bar".into())).unwrap();
+        ed2.undo();
+        assert_eq!(name_of(&ed2, a).as_deref(), Some("header"));
     }
 }
