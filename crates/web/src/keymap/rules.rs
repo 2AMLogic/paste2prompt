@@ -6,21 +6,25 @@
 //! # Layout independence (#22)
 //!
 //! Letters are matched on the character the user **sees**, falling back to
-//! the physical key only when that character is not Latin:
+//! the physical key only when that character is from a non-Latin script:
 //!
 //! - If `KeyboardEvent.key` is a single ASCII letter, that letter decides.
 //!   On AZERTY, Dvorak or Colemak the user presses the key labelled `M` to
 //!   mirror, wherever it sits, which is what the sheet and the tooltips
 //!   show. Matching on `code` alone would bind AZERTY's `,` key (where
 //!   QWERTY has `M`) and leave its labelled `M` key dead.
-//! - If `key` is a single non-ASCII character (Cyrillic `щ`, Greek `ο`,
-//!   Hebrew `ם`…) or `"Unidentified"`, the letter comes from
-//!   `KeyboardEvent.code` (`KeyO` → `o`), so `Ctrl+O`, `⌘Z`, `O` and the
-//!   rest still work, on the key that has the Latin letter printed on it on
-//!   those keyboards.
-//! - Any other ASCII character (AZERTY's `,` on `KeyM`) is not a letter, so
-//!   it never falls back. Digits, punctuation and named keys never match a
-//!   letter binding.
+//! - If `key` is a single letter from a non-Latin script (Cyrillic `щ`,
+//!   Greek `ο`, Hebrew `ם`, Arabic, kana, Hangul…, see [`non_latin_letter`])
+//!   or `"Unidentified"`, the letter comes from `KeyboardEvent.code`
+//!   (`KeyO` → `o`), so `Ctrl+O`, `⌘Z`, `O` and the rest still work, on the
+//!   key that has the Latin letter printed on it on those keyboards.
+//! - Anything else never falls back (#53): a Latin letter outside ASCII
+//!   (Turkish F's `ı` on `KeyR`, BÉPO's `è` on `KeyT`) is the letter on that
+//!   key, not R or T; a symbol (Linux AltGr's `µ` on `KeyM`, `¶` on `KeyR`,
+//!   AZERTY's `,` on `KeyM`) is not a letter at all. Digits, punctuation and
+//!   named keys never match a letter binding.
+//! - An event with AltGr held (`getModifierState("AltGraph")`) matches
+//!   nothing, like Alt: on Linux AltGr doesn't set `altKey`.
 //!
 //! `?` is matched on `key` only: it is a shifted character whose position
 //! differs between layouts, and `key` is exactly what the user typed.
@@ -115,8 +119,9 @@ pub enum Key {
     Char(char),
 }
 
-/// The modifiers a chord needs. Alt never matches: `⌥⌘C` opens DevTools on
-/// macOS, and Ctrl+Alt is AltGr on many European layouts (spec).
+/// The modifiers a chord needs. Alt and AltGr never match: `⌥⌘C` opens
+/// DevTools on macOS, and Ctrl+Alt is AltGr on many European layouts
+/// (spec).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mods {
     /// No Ctrl, ⌘ or Alt (and no Shift, except for [`Key::Char`]).
@@ -252,6 +257,8 @@ pub struct KeyInput<'a> {
     pub meta: bool,
     pub shift: bool,
     pub alt: bool,
+    /// `getModifierState("AltGraph")`.
+    pub alt_graph: bool,
 }
 
 /// The state a key press happens in.
@@ -272,10 +279,43 @@ pub fn event_letter(key: &str, code: &str) -> Option<char> {
     let mut chars = key.chars();
     match (chars.next(), chars.next()) {
         (Some(c), None) if c.is_ascii_alphabetic() => Some(c.to_ascii_lowercase()),
-        (Some(c), None) if !c.is_ascii() => code_letter(code),
+        (Some(c), None) if non_latin_letter(c) => code_letter(code),
         _ if key == "Unidentified" => code_letter(code),
         _ => None,
     }
+}
+
+/// The Unicode blocks of the common non-Latin scripts that keyboard layouts
+/// type (whose keys usually carry the Latin letter too): a key typing a
+/// letter from one of them stands for its physical position. Ranges are
+/// whole blocks; [`non_latin_letter`] keeps only their letters, so block
+/// punctuation (Greek `;`, Arabic `،`) and digits (Arabic-Indic `٣`) are
+/// excluded. Latin blocks (U+0080–U+024F, U+1E00–U+1EFF…) are deliberately
+/// absent, as are symbols.
+const NON_LATIN_BLOCKS: &[(char, char)] = &[
+    ('\u{0370}', '\u{03FF}'), // Greek and Coptic
+    ('\u{0400}', '\u{052F}'), // Cyrillic, Cyrillic Supplement
+    ('\u{0530}', '\u{058F}'), // Armenian
+    ('\u{0590}', '\u{05FF}'), // Hebrew
+    ('\u{0600}', '\u{06FF}'), // Arabic (also Persian, Urdu)
+    ('\u{0900}', '\u{0DFF}'), // Indic: Devanagari to Sinhala
+    ('\u{0E00}', '\u{0EFF}'), // Thai, Lao
+    ('\u{10A0}', '\u{10FF}'), // Georgian
+    ('\u{1100}', '\u{11FF}'), // Hangul Jamo
+    ('\u{1F00}', '\u{1FFF}'), // Greek Extended
+    ('\u{3040}', '\u{30FF}'), // Hiragana, Katakana
+    ('\u{3130}', '\u{318F}'), // Hangul Compatibility Jamo (2-set Korean)
+    ('\u{4E00}', '\u{9FFF}'), // CJK Unified Ideographs
+    ('\u{AC00}', '\u{D7AF}'), // Hangul Syllables
+];
+
+/// Whether `c` is a letter from a non-Latin script ([`NON_LATIN_BLOCKS`]),
+/// so its key falls back to `KeyboardEvent.code` (module docs).
+pub fn non_latin_letter(c: char) -> bool {
+    c.is_alphabetic()
+        && NON_LATIN_BLOCKS
+            .iter()
+            .any(|&(lo, hi)| (lo..=hi).contains(&c))
 }
 
 /// `"KeyO"` → `'o'`.
@@ -300,7 +340,7 @@ impl Chord {
     }
 
     fn mods_match(&self, ev: &KeyInput<'_>) -> bool {
-        if ev.alt {
+        if ev.alt || ev.alt_graph {
             return false;
         }
         let primary = ev.ctrl || ev.meta;
@@ -371,6 +411,29 @@ pub fn lookup(ev: &KeyInput<'_>, ctx: Context) -> Option<&'static Binding> {
         && binding.chord.is_single_key()
         && !matches!(binding.action, Action::Cancel | Action::ShowSheet);
     (!sheet_blocks && binding.when.allows(ctx)).then_some(binding)
+}
+
+/// What a key press does to the shortcut sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SheetStep {
+    Show,
+    Hide,
+    /// Leave it as it is (but still prevent the key's default).
+    Keep,
+}
+
+/// The sheet's response to `action`, or `None` if the sheet doesn't handle
+/// it. `Esc` closes an open sheet; `?` toggles it. A held `?` (`repeat`)
+/// never toggles: its first auto-repeat would close the sheet it just
+/// opened (#53).
+pub fn sheet_step(action: Action, sheet_open: bool, repeat: bool) -> Option<SheetStep> {
+    match action {
+        Action::Cancel if sheet_open => Some(SheetStep::Hide),
+        Action::ShowSheet if repeat => Some(SheetStep::Keep),
+        Action::ShowSheet if sheet_open => Some(SheetStep::Hide),
+        Action::ShowSheet => Some(SheetStep::Show),
+        _ => None,
+    }
 }
 
 /// Which modifier labels to show.

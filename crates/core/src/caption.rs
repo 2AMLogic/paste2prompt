@@ -24,8 +24,9 @@
 //!   decimals. A change too small to show at that precision reads "less
 //!   than 1%" (or "less than 1°"), never as a no-op.
 //! - A rectangle region is its top-left and bottom-right corners. A lasso
-//!   region is its centroid plus its bounding box, since a list of lasso
-//!   points means nothing to a reader. A self-intersecting lasso, whose area
+//!   region is its centroid plus its bounding box, both of its drawn curve
+//!   ([`Region::outline`]), since a list of control points means nothing
+//!   to a reader. A self-intersecting lasso, whose area
 //!   centroid can fall outside the shape, prints its bounding-box center.
 //! - Scale and rotate always print their pivot's position: `about center
 //!   (x%,y%)` for a rectangle, `about bounding-box center (x%,y%)` for a
@@ -49,7 +50,7 @@
 use std::fmt;
 
 use crate::document::{Document, Edit};
-use crate::geometry::{Point, Polygon, Rect, Region};
+use crate::geometry::{Point, Rect, Region};
 use crate::op::{Anchor, MirrorAxis, Op};
 
 /// The fixed two-line header every caption starts with.
@@ -271,27 +272,27 @@ fn rect(r: &Rect) -> String {
 fn describe_region(region: &Region) -> String {
     match region {
         Region::Rect(r) => format!("region {}", rect(r)),
-        Region::Polygon(p) => {
+        Region::Polygon(_) => {
             let bounds = region.bounds();
             format!(
                 "lasso around {} within {}",
-                point(centroid(p, &bounds)),
+                point(centroid(&region.outline(), &bounds)),
                 rect(&bounds)
             )
         }
     }
 }
 
-/// The area centroid of a lasso polygon (where its pixels are centered),
-/// which for a lopsided lasso differs from the bounding-box center.
+/// The area centroid of a lasso's flattened outline (where its pixels are
+/// centered), which for a lopsided lasso differs from the bounding-box
+/// center.
 ///
 /// Falls back to the bounding-box center when the signed-area formula gives
 /// a point that isn't finite or lies outside `bounds`. That happens for a
 /// self-intersecting lasso (a freehand figure-eight): its lobes' signed areas
 /// partly cancel, so the formula divides by a small net area and lands off
 /// the shape, even off the image.
-fn centroid(polygon: &Polygon, bounds: &Rect) -> Point {
-    let pts = polygon.points();
+fn centroid(pts: &[Point], bounds: &Rect) -> Point {
     let n = pts.len();
     let (mut a2, mut cx, mut cy) = (0.0, 0.0, 0.0);
     for i in 0..n {
@@ -553,7 +554,7 @@ mod tests {
         Coordinates are % of image width/height. Edits refer to the original image.
         #1  translate  region (12%,30%)-(40%,52%)                         →  move right 15%, up 4%
         #2  rotate     region (60%,10%)-(80%,25%)                         →  rotate 90° clockwise about center (70%,18%)
-        #3  hint       lasso around (50%,70%) within (40%,60%)-(60%,80%)  →  "make this button red"
+        #3  hint       lasso around (50%,70%) within (38%,57%)-(63%,83%)  →  "make this button red"
         Overall: tighten the spacing between the cards
         "#);
     }
@@ -667,7 +668,7 @@ mod tests {
         insta::assert_snapshot!(text(&ed), @r"
         paste2prompt edit list (user-authored)
         Coordinates are % of image width/height. Edits refer to the original image.
-        #1  scale  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  scale ×0.5 about bounding-box center (40%,25%)
+        #1  scale  lasso around (32%,20%) within (6%,5%)-(70%,41%)  →  scale ×0.5 about bounding-box center (38%,23%)
         ");
     }
 
@@ -687,10 +688,11 @@ mod tests {
 
     #[test]
     fn figure_eight_lasso_centroid_stays_in_its_box() {
-        // Self-intersecting lassos (a bow tie / figure-eight) whose lobes
-        // nearly cancel. The raw signed-area centroid lands far left of the
-        // shape (at about -50% and -13310% of image width respectively),
-        // so the caption falls back to the bounding-box center.
+        // Self-intersecting outlines (a bow tie / figure-eight) whose lobes
+        // nearly cancel. On these straight-edged outlines the raw
+        // signed-area centroid lands far left of the shape (at about -50% and
+        // -13310% of image width respectively), so `centroid` falls back to
+        // the bounding-box center.
         let lopsided = [
             Point::new(0.1, 0.1),
             Point::new(0.3, 0.3),
@@ -704,23 +706,26 @@ mod tests {
             Point::new(0.1, 0.3),
         ];
         for pts in [lopsided, near_cancel] {
-            let Region::Polygon(poly) = Region::polygon(pts).unwrap() else {
-                unreachable!()
-            };
-            let bounds = Region::Polygon(poly.clone()).bounds();
-            let c = centroid(&poly, &bounds);
-            assert!(within(c, &bounds), "{c:?} outside {bounds:?}");
+            let bounds =
+                Rect::from_corners(Point::new(0.1, 0.1), Point::new(0.3, pts[3].y)).unwrap();
+            let c = centroid(&pts, &bounds);
             assert_eq!(c, bounds.center());
+            // As lassos, the same points are control points of a curve,
+            // whose centroid also stays inside the curve's box.
+            let region = Region::polygon(pts).unwrap();
+            let bounds = region.bounds();
+            let c = centroid(&region.outline(), &bounds);
+            assert!(within(c, &bounds), "{c:?} outside {bounds:?}");
         }
         let region = Region::polygon(lopsided).unwrap();
         assert_eq!(
             describe_region(&region),
-            "lasso around (20%,21%) within (10%,10%)-(30%,32%)"
+            "lasso around (20%,21%) within (8%,10%)-(32%,32%)"
         );
         let region = Region::polygon(near_cancel).unwrap();
         assert_eq!(
             describe_region(&region),
-            "lasso around (20%,20%) within (10%,10%)-(30%,30%)"
+            "lasso around (20%,20%) within (8%,10%)-(32%,30%)"
         );
     }
 
@@ -843,10 +848,10 @@ mod tests {
         insta::assert_snapshot!(text(&ed), @r"
         paste2prompt edit list (user-authored)
         Coordinates are % of image width/height. Edits refer to the original image.
-        #1  rotate  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  rotate 90° clockwise about bounding-box center (40%,25%)
-        #2  mirror  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  mirror horizontally across x=40% (flip left to right)
-        #3  mirror  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  mirror vertically across y=25% (flip top to bottom)
-        #4  scale   lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  scale ×2 about point (10%,10%)
+        #1  rotate  lasso around (32%,20%) within (6%,5%)-(70%,41%)  →  rotate 90° clockwise about bounding-box center (38%,23%)
+        #2  mirror  lasso around (32%,20%) within (6%,5%)-(70%,41%)  →  mirror horizontally across x=38% (flip left to right)
+        #3  mirror  lasso around (32%,20%) within (6%,5%)-(70%,41%)  →  mirror vertically across y=23% (flip top to bottom)
+        #4  scale   lasso around (32%,20%) within (6%,5%)-(70%,41%)  →  scale ×2 about point (10%,10%)
         ");
     }
 

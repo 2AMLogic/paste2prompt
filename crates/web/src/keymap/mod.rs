@@ -18,7 +18,8 @@
 //!   always suppress the browser's own dialog: `⌘S` (Save page) and `⌘O`
 //!   (Open file). `⌘V` is never prevented: the `paste` event does the work
 //!   (`crate::input`).
-//! - A held key (`repeat`) doesn't re-run export, open or the sheet.
+//! - A held key (`repeat`) doesn't re-run export or open, and never toggles
+//!   the sheet ([`rules::sheet_step`]).
 //!
 //! Layout independence (#22) is in [`rules`].
 
@@ -33,7 +34,7 @@ use web_sys::{HtmlElement, KeyboardEvent};
 use crate::canvas::{CanvasState, OpKind};
 use crate::export::{self, Exporter};
 use crate::input::{ImageInput, target_is_editable};
-use rules::{Action, Context, KeyInput, Platform};
+use rules::{Action, Context, KeyInput, Platform, SheetStep};
 
 /// The platform whose modifier labels to show (⌘ on macOS, Ctrl elsewhere).
 pub fn platform() -> Platform {
@@ -146,6 +147,7 @@ impl Targets {
             meta: ev.meta_key(),
             shift: ev.shift_key(),
             alt: ev.alt_key(),
+            alt_graph: ev.get_modifier_state("AltGraph"),
         };
         let ctrl = self.canvas.controller;
         let ctx = Context {
@@ -164,18 +166,18 @@ impl Targets {
 
     /// Runs `action`; returns whether to prevent the key's default.
     fn run(&self, action: Action, repeat: bool) -> bool {
+        if let Some(step) = rules::sheet_step(action, self.sheet.is_open(), repeat) {
+            match step {
+                SheetStep::Show => self.sheet.show(),
+                SheetStep::Hide => self.sheet.hide(),
+                SheetStep::Keep => {}
+            }
+            return true;
+        }
         let has_image = self.exporter.has_image();
         match action {
-            Action::Cancel | Action::ShowSheet if self.sheet.is_open() => {
-                self.sheet.hide();
-                true
-            }
-            Action::ShowSheet => {
-                if !repeat {
-                    self.sheet.show();
-                }
-                true
-            }
+            // Handled by `sheet_step` above (a closed sheet's Esc is not).
+            Action::ShowSheet => true,
             Action::PasteImage => false,
             Action::OpenFile => {
                 // Always: stop the browser's own Open dialog.

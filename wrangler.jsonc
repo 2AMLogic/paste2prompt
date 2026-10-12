@@ -2,8 +2,10 @@
 //
 // Assets only: there is no Worker script, so nothing runs server-side and
 // dist/_headers (the CSP, written by scripts/write_headers.py) applies to
-// every response. Deploying, and attaching paste2prompt.com as a custom
-// domain, are operator steps (issue #14).
+// every response. Deploying is an operator step: see README §Deploy. The
+// apex is attached as a Workers custom domain below; www.paste2prompt.com is
+// a proxied DNS record plus a zone redirect rule (www -> apex, 301), which
+// live in the zone, not in this file.
 //
 // Privacy (CLAUDE.md rule 1): the CI bundle scan cannot see scripts that
 // Cloudflare injects at the edge. Those are zone settings, not settings in
@@ -26,6 +28,15 @@
   "assets": {
     "directory": "./dist"
   },
+
+  // Serve only on paste2prompt.com. The custom domain creates and owns the
+  // apex DNS record and its certificate. No *.workers.dev or preview URLs, so
+  // the site has a single origin.
+  "routes": [
+    { "pattern": "paste2prompt.com", "custom_domain": true }
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
 
   // No request logs or traces are kept for this Worker.
   "observability": {

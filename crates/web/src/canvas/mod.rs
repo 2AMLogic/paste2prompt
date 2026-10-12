@@ -1,9 +1,10 @@
 //! The canvas view: the image fitted to the viewport, region tools (rectangle,
-//! lasso) and operation handles (translate, scale, rotate, mirror, hint).
+//! lasso), operation handles (translate, scale, rotate, mirror, hint) and a
+//! selected lasso's control-point handles.
 //!
 //! - [`controller`]: the pure interaction state machine over the core
 //!   `Editor` (tested natively).
-//! - [`geom`]: hit-testing, lasso simplification and handle math (tested
+//! - [`geom`]: hit-testing, capped lasso simplification and handle math (tested
 //!   natively).
 //! - `view`: image-pixel / screen-pixel mapping.
 //! - `layout`: redraw triggers for size and device-pixel-ratio changes.

@@ -1,7 +1,9 @@
 //! Canvas2D drawing of the image, marks, ghosts, handles and the region
 //! being drawn. It follows the export's mark vocabulary (outline, numbered
 //! badge, dashed ghost, translate arrow, mirror-axis glyph) but is not the
-//! export: the core renders that (spec §Architecture).
+//! export: the core renders that (spec §Architecture). Regions and ghosts
+//! are drawn from their flattened outlines (a lasso is its spline curve),
+//! the same polylines the export strokes.
 //!
 //! Each edit's outline, badge, ghost, arrow and mirror glyph use the export's
 //! color for its badge number ([`mark_css`]). Selection is a neutral
@@ -20,7 +22,8 @@ use super::source::SourceImage;
 use super::view::ViewTransform;
 
 const HALO: &str = "rgba(255, 255, 255, 0.95)";
-/// Resize and rotate handles: UI chrome, not an edit, so not a palette color.
+/// Resize, rotate and lasso control-point handles: UI chrome, not an edit,
+/// so not a palette color.
 const HANDLE: &str = "#0a84ff";
 const PREVIEW: &str = "#ff2d55";
 const BADGE_RADIUS: f64 = 11.0;
@@ -128,6 +131,17 @@ pub fn draw(
                     ctx.set_stroke_style_str(HANDLE);
                     ctx.set_line_width(1.5);
                     ctx.stroke_rect(p.0 - s / 2.0, p.1 - s / 2.0, s, s);
+                }
+                Handle::Control(_) => {
+                    // A lasso control point: a small ring on the curve, so
+                    // it reads as "drag this point", not a resize corner.
+                    ctx.begin_path();
+                    ctx.arc(p.0, p.1, HANDLE_SIZE / 2.0, 0.0, std::f64::consts::TAU)?;
+                    ctx.set_fill_style_str("#fff");
+                    ctx.fill();
+                    ctx.set_stroke_style_str(HANDLE);
+                    ctx.set_line_width(2.0);
+                    ctx.stroke();
                 }
                 Handle::Rotate => {
                     let anchor = match edit.op() {

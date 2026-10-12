@@ -7,7 +7,8 @@ use std::collections::HashSet;
 use paste2prompt_core::{EditId, ImageSize};
 
 use super::rules::{
-    Action, BINDINGS, Context, KeyInput, Platform, apply, event_letter, hint, lookup, sheet,
+    Action, BINDINGS, Context, KeyInput, Platform, SheetStep, apply, event_letter, hint, lookup,
+    non_latin_letter, sheet, sheet_step,
 };
 use crate::canvas::{Controller, OpKind, Pointer, Tool};
 
@@ -38,6 +39,7 @@ fn ev<'a>(key: &'a str, code: &'a str, m: M) -> KeyInput<'a> {
         meta,
         shift,
         alt: false,
+        alt_graph: false,
     }
 }
 
@@ -196,6 +198,7 @@ fn no_two_bindings_share_a_chord() {
                 meta: bits & 2 != 0,
                 shift: bits & 4 != 0,
                 alt: bits & 8 != 0,
+                alt_graph: false,
             };
             let n = BINDINGS.iter().filter(|b| b.chord.matches(&input)).count();
             assert!(n <= 1, "{input:?} matches {n} bindings");
@@ -267,81 +270,296 @@ fn reserved_and_unbound_chords_are_left_to_the_browser() {
     }
 }
 
+/// One layout case: an event and the action it must trigger (`None`: the
+/// key is left to the browser).
+type LayoutCase = (&'static str, &'static str, M, Option<Action>, &'static str);
+
+/// Non-Latin layouts (#22): the physical key decides.
+const NON_LATIN: &[LayoutCase] = &[
+    // Russian: the O key types "щ", Z "я", S "ы", C "с", Y "н", V "м".
+    (
+        "щ",
+        "KeyO",
+        M::Ctrl,
+        Some(Action::OpenFile),
+        "Russian Ctrl+O",
+    ),
+    ("щ", "KeyO", M::Cmd, Some(Action::OpenFile), "Russian ⌘O"),
+    (
+        "щ",
+        "KeyO",
+        M::None,
+        Some(Action::Op(OpKind::Rotate)),
+        "Russian O",
+    ),
+    ("я", "KeyZ", M::Ctrl, Some(Action::Undo), "Russian Ctrl+Z"),
+    (
+        "Я",
+        "KeyZ",
+        M::CtrlShift,
+        Some(Action::Redo),
+        "Russian Ctrl+Shift+Z",
+    ),
+    ("н", "KeyY", M::Ctrl, Some(Action::Redo), "Russian Ctrl+Y"),
+    ("ы", "KeyS", M::Cmd, Some(Action::Download), "Russian ⌘S"),
+    (
+        "с",
+        "KeyC",
+        M::Ctrl,
+        Some(Action::CopyImage),
+        "Russian Ctrl+C",
+    ),
+    (
+        "м",
+        "KeyV",
+        M::None,
+        Some(Action::Tool(Tool::Select)),
+        "Russian V",
+    ),
+    // Greek and Hebrew.
+    ("ο", "KeyO", M::Ctrl, Some(Action::OpenFile), "Greek Ctrl+O"),
+    (
+        "ρ",
+        "KeyR",
+        M::None,
+        Some(Action::Tool(Tool::Rect)),
+        "Greek R",
+    ),
+    (
+        "ם",
+        "KeyO",
+        M::Ctrl,
+        Some(Action::OpenFile),
+        "Hebrew Ctrl+O",
+    ),
+    (
+        "ר",
+        "KeyR",
+        M::None,
+        Some(Action::Tool(Tool::Rect)),
+        "Hebrew R",
+    ),
+    // Arabic, Thai, Georgian, Korean 2-set, Japanese kana: the O key.
+    (
+        "خ",
+        "KeyO",
+        M::Ctrl,
+        Some(Action::OpenFile),
+        "Arabic Ctrl+O",
+    ),
+    ("น", "KeyO", M::Ctrl, Some(Action::OpenFile), "Thai Ctrl+O"),
+    (
+        "ო",
+        "KeyO",
+        M::Ctrl,
+        Some(Action::OpenFile),
+        "Georgian Ctrl+O",
+    ),
+    (
+        "ㅐ",
+        "KeyO",
+        M::Ctrl,
+        Some(Action::OpenFile),
+        "Korean Ctrl+O",
+    ),
+    (
+        "ら",
+        "KeyO",
+        M::Ctrl,
+        Some(Action::OpenFile),
+        "Japanese kana Ctrl+O",
+    ),
+    // A key the browser can't name falls back to its position too.
+    (
+        "Unidentified",
+        "KeyO",
+        M::Ctrl,
+        Some(Action::OpenFile),
+        "Unidentified",
+    ),
+    // A non-letter position never becomes a letter.
+    ("щ", "Digit1", M::None, None, "Cyrillic on a digit key"),
+    ("ж", "Semicolon", M::None, None, "Cyrillic on Semicolon"),
+    // Punctuation inside a non-Latin block is not a letter.
+    (
+        "\u{037E}",
+        "KeyQ",
+        M::None,
+        None,
+        "Greek question mark U+037E",
+    ),
+    ("،", "KeyO", M::Ctrl, None, "Arabic comma"),
+    ("٣", "KeyO", M::Ctrl, None, "Arabic-Indic digit"),
+];
+
+/// Latin layouts: the letter printed on the key decides, and Latin letters
+/// outside ASCII or symbols never fall back to the position (#53).
+const LATIN: &[LayoutCase] = &[
+    // AZERTY: M sits where QWERTY has `;`; QWERTY's M position types `,`.
+    (
+        "m",
+        "Semicolon",
+        M::None,
+        Some(Action::Op(OpKind::Mirror)),
+        "AZERTY M",
+    ),
+    (",", "KeyM", M::None, None, "AZERTY , on KeyM"),
+    // AZERTY: Z is QWERTY's W position.
+    ("z", "KeyW", M::Ctrl, Some(Action::Undo), "AZERTY Ctrl+Z"),
+    ("w", "KeyZ", M::Ctrl, None, "AZERTY Ctrl+W on KeyZ"),
+    // Dvorak: O is QWERTY's S position, S is QWERTY's semicolon.
+    ("o", "KeyS", M::Cmd, Some(Action::OpenFile), "Dvorak ⌘O"),
+    (
+        "s",
+        "Semicolon",
+        M::Cmd,
+        Some(Action::Download),
+        "Dvorak ⌘S",
+    ),
+    // Turkish F: the R position types dotless ı (the layout's R is
+    // elsewhere).
+    ("ı", "KeyR", M::None, None, "Turkish F ı on KeyR"),
+    ("ğ", "KeyO", M::Ctrl, None, "Turkish F ğ"),
+    // BÉPO: è on QWERTY's T position, à on Z.
+    ("è", "KeyT", M::None, None, "BÉPO è on KeyT"),
+    ("à", "KeyZ", M::Ctrl, None, "BÉPO Ctrl+à on KeyZ"),
+    // Other Latin-extended letters.
+    ("ç", "KeyC", M::Ctrl, None, "ç"),
+    ("ẽ", "KeyE", M::None, None, "Latin Extended Additional"),
+    // Linux AltGr (German and similar), which Chrome reports with no altKey.
+    ("µ", "KeyM", M::None, None, "AltGr µ on KeyM"),
+    ("ł", "KeyL", M::None, None, "AltGr ł on KeyL"),
+    ("ø", "KeyO", M::None, None, "AltGr ø on KeyO"),
+    ("ſ", "KeyS", M::None, None, "AltGr ſ on KeyS"),
+    ("¢", "KeyC", M::None, None, "AltGr ¢ on KeyC"),
+    ("“", "KeyV", M::None, None, "AltGr “ on KeyV"),
+    ("¶", "KeyR", M::None, None, "AltGr ¶ on KeyR"),
+    ("€", "KeyE", M::None, None, "AltGr € on KeyE"),
+    // `?` is matched on the character, wherever the layout puts it.
+    ("?", "Comma", M::Shift, Some(Action::ShowSheet), "AZERTY ?"),
+    (
+        "?",
+        "Minus",
+        M::None,
+        Some(Action::ShowSheet),
+        "unshifted ?",
+    ),
+    ("/", "Slash", M::None, None, "/ is not ?"),
+];
+
 #[test]
 fn letters_match_on_the_physical_key_for_non_latin_layouts() {
-    let ctx = Context::default();
-    // Russian layout: the O key types "щ", Z "я", S "ы", C "с", Y "н".
-    assert_eq!(
-        action(ev("щ", "KeyO", M::Ctrl), ctx),
-        Some(Action::OpenFile)
-    );
-    assert_eq!(action(ev("щ", "KeyO", M::Cmd), ctx), Some(Action::OpenFile));
-    assert_eq!(
-        action(ev("щ", "KeyO", M::None), ctx),
-        Some(Action::Op(OpKind::Rotate))
-    );
-    assert_eq!(action(ev("я", "KeyZ", M::Ctrl), ctx), Some(Action::Undo));
-    assert_eq!(
-        action(ev("Я", "KeyZ", M::CtrlShift), ctx),
-        Some(Action::Redo)
-    );
-    assert_eq!(action(ev("н", "KeyY", M::Ctrl), ctx), Some(Action::Redo));
-    assert_eq!(action(ev("ы", "KeyS", M::Cmd), ctx), Some(Action::Download));
-    assert_eq!(
-        action(ev("с", "KeyC", M::Ctrl), ctx),
-        Some(Action::CopyImage)
-    );
-    assert_eq!(
-        action(ev("м", "KeyV", M::None), ctx),
-        Some(Action::Tool(Tool::Select))
-    );
-    // Greek and Hebrew.
-    assert_eq!(
-        action(ev("ο", "KeyO", M::Ctrl), ctx),
-        Some(Action::OpenFile)
-    );
-    assert_eq!(
-        action(ev("ם", "KeyO", M::Ctrl), ctx),
-        Some(Action::OpenFile)
-    );
-    // A key the browser can't name falls back to its position too.
-    assert_eq!(
-        action(ev("Unidentified", "KeyO", M::Ctrl), ctx),
-        Some(Action::OpenFile)
-    );
-    // A non-letter position never becomes a letter.
-    assert_eq!(event_letter("щ", "Digit1"), None);
-    assert_eq!(event_letter("ж", "Semicolon"), None);
+    for &(key, code, m, expected, note) in NON_LATIN {
+        assert_eq!(
+            action(ev(key, code, m), Context::default()),
+            expected,
+            "{note}"
+        );
+    }
 }
 
 #[test]
 fn latin_layouts_keep_the_letter_printed_on_the_key() {
+    for &(key, code, m, expected, note) in LATIN {
+        assert_eq!(
+            action(ev(key, code, m), Context::default()),
+            expected,
+            "{note}"
+        );
+    }
+}
+
+#[test]
+fn only_non_latin_letters_fall_back_to_the_physical_key() {
+    // (key, code, letter): the rule itself, below the bindings.
+    let cases = [
+        ("щ", "KeyO", Some('o')),
+        ("Ω", "KeyV", Some('v')),
+        ("Unidentified", "KeyQ", Some('q')),
+        ("M", "KeyM", Some('m')),
+        ("m", "Semicolon", Some('m')),
+        ("ı", "KeyR", None),
+        ("è", "KeyT", None),
+        ("µ", "KeyM", None),
+        ("ß", "KeyS", None),
+        ("ª", "KeyA", None),
+        ("щ", "Digit1", None),
+        ("щщ", "KeyO", None),
+        ("", "KeyO", None),
+    ];
+    for (key, code, letter) in cases {
+        assert_eq!(event_letter(key, code), letter, "{key} {code}");
+    }
+    for c in [
+        'щ', 'Ж', 'ο', 'Ω', 'ם', 'خ', 'น', 'ო', 'ㅐ', '한', 'ら', 'カ', '中', 'ա',
+    ] {
+        assert!(non_latin_letter(c), "{c}");
+    }
+    for c in [
+        'a', 'Z', 'ı', 'è', 'à', 'ç', 'ğ', 'ł', 'ø', 'ſ', 'ß', 'µ', 'ẽ', '¢', '¶', '“', '\u{037E}',
+        '،', '٣', '1',
+    ] {
+        assert!(!non_latin_letter(c), "{c}");
+    }
+}
+
+#[test]
+fn altgr_never_matches() {
+    // Linux AltGr reports `AltGraph` but no `altKey`; Windows AltGr also
+    // sets Ctrl and Alt.
     let ctx = Context::default();
-    // AZERTY: M sits where QWERTY has `;`, and QWERTY's M position types `,`.
-    assert_eq!(
-        action(ev("m", "Semicolon", M::None), ctx),
-        Some(Action::Op(OpKind::Mirror))
-    );
-    assert_eq!(action(ev(",", "KeyM", M::None), ctx), None);
-    // AZERTY: Z is QWERTY's W position, A is Q.
-    assert_eq!(action(ev("z", "KeyW", M::Ctrl), ctx), Some(Action::Undo));
-    assert_eq!(action(ev("w", "KeyZ", M::Ctrl), ctx), None);
-    // Dvorak: O is QWERTY's S position, S is QWERTY's semicolon.
-    assert_eq!(action(ev("o", "KeyS", M::Cmd), ctx), Some(Action::OpenFile));
-    assert_eq!(
-        action(ev("s", "Semicolon", M::Cmd), ctx),
-        Some(Action::Download)
-    );
-    // `?` is matched on the character, wherever the layout puts it.
-    assert_eq!(
-        action(ev("?", "Comma", M::Shift), ctx),
-        Some(Action::ShowSheet)
-    );
-    assert_eq!(
-        action(ev("?", "Minus", M::None), ctx),
-        Some(Action::ShowSheet)
-    );
-    assert_eq!(action(ev("/", "Slash", M::None), ctx), None);
+    let altgr = |key, code, m| KeyInput {
+        alt_graph: true,
+        ..ev(key, code, m)
+    };
+    for (key, code, m) in [
+        ("µ", "KeyM", M::None),
+        ("m", "KeyM", M::None),
+        ("щ", "KeyO", M::Ctrl),
+        ("o", "KeyO", M::Ctrl),
+        ("z", "KeyZ", M::Ctrl),
+        ("?", "Minus", M::None),
+        ("Escape", "Escape", M::None),
+    ] {
+        assert_eq!(action(altgr(key, code, m), ctx), None, "{key} {m:?}");
+    }
+}
+
+#[test]
+fn a_held_question_mark_never_toggles_the_sheet() {
+    use SheetStep::{Hide, Keep, Show};
+    // (action, sheet open, repeat, step)
+    let cases = [
+        (Action::ShowSheet, false, false, Some(Show)),
+        (Action::ShowSheet, true, false, Some(Hide)),
+        // The first auto-repeat of the `?` that opened it (#53).
+        (Action::ShowSheet, true, true, Some(Keep)),
+        (Action::ShowSheet, false, true, Some(Keep)),
+        (Action::Cancel, true, false, Some(Hide)),
+        (Action::Cancel, true, true, Some(Hide)),
+        // A closed sheet's Esc is the canvas's.
+        (Action::Cancel, false, false, None),
+        (Action::Cancel, false, true, None),
+        (Action::Undo, true, false, None),
+        (Action::Download, false, false, None),
+    ];
+    for (action, open, repeat, step) in cases {
+        assert_eq!(
+            sheet_step(action, open, repeat),
+            step,
+            "{action:?} open={open} repeat={repeat}"
+        );
+    }
+    // Press and hold `?`: one show, then the repeats keep it open.
+    let mut open = false;
+    for repeat in [false, true, true, true] {
+        match sheet_step(Action::ShowSheet, open, repeat) {
+            Some(Show) => open = true,
+            Some(Hide) => open = false,
+            _ => {}
+        }
+        assert!(open, "repeat={repeat}");
+    }
 }
 
 #[test]

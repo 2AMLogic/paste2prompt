@@ -1,5 +1,7 @@
-//! Pure geometry for the canvas tools: hit-testing, lasso simplification and
-//! handle math. Everything here works in **image pixels** (`(x, y)`, y down)
+//! Pure geometry for the canvas tools: hit-testing (against each region's
+//! flattened [`Region::outline`], so a lasso hits along its curve), lasso
+//! simplification to at most a handful of spline control points, and handle
+//! math. Everything here works in **image pixels** (`(x, y)`, y down)
 //! and has no browser dependency, so it is unit-tested natively.
 //!
 //! Hit-testing only ever looks at an edit's **source** region. Ghosts (the
@@ -128,6 +130,66 @@ pub fn simplify_closed(points: &[Px], epsilon: f64) -> Vec<Px> {
     // `start`; drop both duplicates.
     first_half.extend_from_slice(&second_half[1..second_half.len() - 1]);
     first_half
+}
+
+/// Reduces a freehand lasso path to at most `max_points` spline control
+/// points (spec §Operations, "Region": a lasso is approximate).
+///
+/// First [`simplify_closed`] at `epsilon`. If more than `max_points` survive,
+/// the tolerance is raised by binary search to the smallest that leaves
+/// `max_points` or fewer, so the kept points are the path's most prominent
+/// corners. Both tolerances are in the units of `points`; the canvas passes
+/// image pixels scaled from screen pixels, so the lasso simplifies the same
+/// at any zoom. `max_points` below 3 is treated as 3.
+///
+/// The result has at most `max_points` points. It has at least 3 whenever
+/// the path does after simplifying at `epsilon`; fewer means the path was a
+/// dot or a straight scribble, which the caller rejects as "no region"
+/// (as does [`Region::polygon`] for points enclosing no area).
+pub fn simplify_lasso(points: &[Px], epsilon: f64, max_points: usize) -> Vec<Px> {
+    let max_points = max_points.max(3);
+    let fine = simplify_closed(points, epsilon);
+    if fine.len() <= max_points {
+        return fine;
+    }
+    // Every point is within the bounding-box diagonal of the split chord, so
+    // at that tolerance only the two split points survive.
+    let (mut lo, mut hi) = (epsilon.max(0.0), bbox_diagonal(&fine) + 1.0);
+    let mut best = simplify_closed(points, hi);
+    for _ in 0..48 {
+        let mid = (lo + hi) / 2.0;
+        let candidate = simplify_closed(points, mid);
+        if candidate.len() <= max_points {
+            (hi, best) = (mid, candidate);
+        } else {
+            lo = mid;
+        }
+        if hi - lo <= f64::EPSILON * hi {
+            break;
+        }
+    }
+    if best.len() >= 3 {
+        return best;
+    }
+    // Only a perfectly symmetric path can drop from more than `max_points`
+    // straight to 2 as the tolerance rises (both halves losing their last
+    // vertex at the same tolerance). Keep evenly spaced simplified points
+    // instead.
+    (0..max_points)
+        .map(|k| fine[k * fine.len() / max_points])
+        .collect()
+}
+
+fn bbox_diagonal(points: &[Px]) -> f64 {
+    let (mut min, mut max) = (
+        (f64::INFINITY, f64::INFINITY),
+        (f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for &(x, y) in points {
+        min = (min.0.min(x), min.1.min(y));
+        max = (max.0.max(x), max.1.max(y));
+    }
+    dist(min, max)
 }
 
 /// Normalizes an angle to `(-180, 180]` degrees.
@@ -318,6 +380,26 @@ mod tests {
     }
 
     #[test]
+    fn lasso_hit_test_follows_the_curve() {
+        // A lasso's curve bulges past its control triangle's straight edges:
+        // a point just outside the triangle but inside the curve hits it.
+        let mut ed = editor();
+        let size = ed.document().image_size();
+        let tri = Region::polygon_from_pixels(size, [(40.0, 20.0), (160.0, 20.0), (100.0, 80.0)])
+            .unwrap();
+        let top = tri
+            .outline_pixels(size)
+            .iter()
+            .map(|p| p.1)
+            .fold(f64::INFINITY, f64::min);
+        assert!(top < 18.0, "{top}");
+        let id = ed.add_edit(tri, Op::Hint, None).unwrap();
+        let inside_curve_only = (100.0, (top + 20.0) / 2.0);
+        assert_eq!(hit_test(ed.document(), inside_curve_only), Some(id));
+        assert_eq!(hit_test(ed.document(), (100.0, top - 1.0)), None);
+    }
+
+    #[test]
     fn simplify_drops_collinear_points_and_closing_duplicate() {
         let mut path = Vec::new();
         for i in 0..=10 {
@@ -379,6 +461,107 @@ mod tests {
         assert!(s.len() >= 8 && s.len() < 60, "{}", s.len());
         let size = ImageSize::new(100, 100).unwrap();
         assert!(Region::polygon_from_pixels(size, s).is_ok());
+    }
+
+    /// A deterministic pseudo-random lasso: a wobbly loop around a center,
+    /// sampled at pointer-like spacing.
+    fn wobbly_loop(seed: u64, samples: u32) -> Vec<Px> {
+        let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let mut rnd = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let lobes = 2.0 + (rnd() * 6.0).floor();
+        let (amp, phase) = (5.0 + rnd() * 30.0, rnd() * 6.0);
+        (0..samples)
+            .map(|i| {
+                let t = f64::from(i) / f64::from(samples) * std::f64::consts::TAU;
+                let r = 80.0 + amp * (lobes * t + phase).sin() + rnd() * 3.0;
+                (200.0 + r * t.cos(), 150.0 + r * t.sin())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn simplify_lasso_caps_control_points() {
+        let size = ImageSize::new(400, 300).unwrap();
+        for seed in 0..200 {
+            let path = wobbly_loop(seed, 300 + (seed as u32 % 7) * 100);
+            // Plenty of detail survives the fine tolerance alone.
+            assert!(simplify_closed(&path, 1.5).len() > 10, "seed {seed}");
+            for max in [3, 5, 10] {
+                let s = simplify_lasso(&path, 1.5, max);
+                assert!(
+                    (3..=max).contains(&s.len()),
+                    "seed {seed}: {} > {max}",
+                    s.len()
+                );
+                // Control points are points of the path, in path order.
+                let idx: Vec<usize> = s
+                    .iter()
+                    .map(|p| path.iter().position(|q| q == p).unwrap())
+                    .collect();
+                assert!(idx.windows(2).all(|w| w[0] < w[1]), "seed {seed}");
+                assert!(Region::polygon_from_pixels(size, s).is_ok(), "seed {seed}");
+            }
+        }
+    }
+
+    #[test]
+    fn simplify_lasso_keeps_the_most_prominent_corners() {
+        // A square drawn with many samples per side, plus small jitter: the
+        // cap keeps the four corners.
+        let mut path = Vec::new();
+        for side in 0..4 {
+            for i in 0..50 {
+                let t = f64::from(i) * 2.0;
+                let wiggle = if i % 2 == 0 { 0.8 } else { -0.8 };
+                path.push(match side {
+                    0 => (t, wiggle),
+                    1 => (100.0 + wiggle, t),
+                    2 => (100.0 - t, 100.0 + wiggle),
+                    _ => (wiggle, 100.0 - t),
+                });
+            }
+        }
+        let s = simplify_lasso(&path, 0.5, 10);
+        assert!(s.len() <= 10);
+        for corner in [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)] {
+            assert!(
+                s.iter().any(|&p| dist(p, corner) < 2.5),
+                "{corner:?} lost: {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn simplify_lasso_handles_symmetric_and_degenerate_paths() {
+        // An exact regular 64-gon: every vertex is equally prominent.
+        let ring: Vec<Px> = (0..64)
+            .map(|i| {
+                let t = f64::from(i) / 64.0 * std::f64::consts::TAU;
+                (50.0 + 40.0 * t.cos(), 50.0 + 40.0 * t.sin())
+            })
+            .collect();
+        for max in 3..=10 {
+            let s = simplify_lasso(&ring, 0.1, max);
+            assert!((3..=max).contains(&s.len()), "{max}: {}", s.len());
+        }
+        // Short paths pass through untouched by the cap.
+        let tri = [(0.0, 0.0), (10.0, 0.0), (5.0, 8.0)];
+        assert_eq!(simplify_lasso(&tri, 1.0, 10), tri.to_vec());
+        // A dot or a straight scribble stays below 3 points: no region.
+        assert!(simplify_lasso(&[], 1.0, 10).is_empty());
+        assert!(simplify_lasso(&[(3.0, 3.0); 40], 1.0, 10).len() < 3);
+        let line: Vec<Px> = (0..100).map(|i| (f64::from(i % 50) * 2.0, 0.0)).collect();
+        assert!(simplify_lasso(&line, 1.0, 10).len() < 3);
+        // Collinear points that survive simplification (a zero tolerance)
+        // are still no region.
+        let size = ImageSize::new(200, 100).unwrap();
+        let flat = simplify_lasso(&[(0.0, 5.0), (5.0, 5.0), (10.0, 5.0)], 0.0, 10);
+        assert!(Region::polygon_from_pixels(size, flat).is_err());
     }
 
     #[test]

@@ -31,6 +31,29 @@ resolution. The canvas view is scaled; exports are not.
 
 ## Operations
 
+**Regions.** A region is a rectangle (`R`) or a lasso (`L`). Regions only
+need to be approximate, so a lasso is a smooth closed curve through a few
+**control points**, not the raw pointer trace:
+
+- **Curve.** A closed **centripetal** Catmull-Rom spline (alpha = 0.5)
+  through every control point. It passes through each stored point and
+  doesn't overshoot, cusp or loop when points sit close together. Where it
+  would bulge past the image edge it is clamped onto the edge.
+- **Point reduction.** When a lasso is finished, Ramer–Douglas–Peucker
+  simplifies the pointer trace with a tolerance in **screen pixels**, so it
+  behaves the same at any zoom. If more than **10** points survive, the
+  tolerance is raised (binary search) until 10 or fewer remain. A trace that
+  leaves fewer than 3 points, or points enclosing no area, is not a region
+  (as with a rectangle of zero width), and the press counts as a click.
+- **Storage.** The control points are what is stored (the JSON keeps its
+  `polygon` kind and `points` list). Everything that draws, hit-tests or
+  measures a lasso, on the canvas and in the export alike, uses the same
+  flattened curve: its outline, ghosts, bounding box, center, badge
+  placement, and the caption's centroid and box.
+- **Editing.** With `V`, a selected lasso shows a handle on each control
+  point. Dragging one reshapes the curve; the drag is one undo step, and
+  the point stays inside the image.
+
 | Op | Parameters | How it is set |
 |---|---|---|
 | Translate | dx, dy | With translate active, drag from the region to where it should go. This sets the destination |
@@ -180,10 +203,13 @@ chords:
 | `?` | Show the shortcut sheet |
 
 Letters match the character printed on the key, so on AZERTY or Dvorak
-`M` is the key labelled M. When a layout types a non-Latin character
-(Cyrillic, Greek, Hebrew…), the physical key decides instead
-(`KeyboardEvent.code`), so `Ctrl+O` is the key with O printed on it. `?`
-matches the typed character. The sheet shows ⌘ on macOS and Ctrl elsewhere.
+`M` is the key labelled M. When a layout types a letter from a non-Latin
+script (Cyrillic, Greek, Hebrew, Arabic, Korean, Japanese kana…), the
+physical key decides instead (`KeyboardEvent.code`), so `Ctrl+O` is the key
+with O printed on it. Latin letters outside ASCII (Turkish `ı`, BÉPO `è`)
+and symbols (Linux AltGr's `µ`) never fall back to the physical key, and
+nothing fires with AltGr held. `?` matches the typed character, and holding
+it doesn't toggle the sheet. The sheet shows ⌘ on macOS and Ctrl elsewhere.
 
 ## Architecture
 

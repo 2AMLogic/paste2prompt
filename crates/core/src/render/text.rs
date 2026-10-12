@@ -793,9 +793,12 @@ impl Text {
     }
 }
 
-/// The paragraphs of `text`: split at each paragraph separator (`\r\n`
-/// counts as one), without a trailing empty one. The caption never contains
-/// line breaks (see `caption.rs`), so this is a single paragraph in practice.
+/// The paragraphs of `text`: split at each LF, CR, NEL and U+2029 PARAGRAPH
+/// SEPARATOR (`\r\n` counts as one), without a trailing empty one. Unlike
+/// cosmic-text 0.19, which kept U+2029 inline as a glyph, this breaks the
+/// line there (pinned by `layout_tests::paragraph_separators`). The caption
+/// never contains line breaks (see `caption.rs`), so this is a single
+/// paragraph in practice.
 fn paragraphs(text: &str) -> impl Iterator<Item = &str> {
     let mut rest = Some(text);
     std::iter::from_fn(move || {
@@ -902,6 +905,9 @@ fn nfc_letter(letter: &str) -> Vec<char> {
     }
     out
 }
+
+#[cfg(test)]
+mod layout_tests;
 
 #[cfg(test)]
 mod tests {
