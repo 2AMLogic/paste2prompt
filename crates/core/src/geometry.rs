@@ -357,6 +357,11 @@ impl Region {
     /// offset, keeping its shape. The offset is limited so the region stays
     /// entirely inside the image.
     ///
+    /// The result is always a valid region that loads back from JSON. If
+    /// floating-point rounding would collapse it (only possible for a region
+    /// a few ulps wide, which pointer input can't produce), the region is
+    /// returned unmoved.
+    ///
     /// This is the `V`-tool drag: the edit re-picks which original pixels it
     /// refers to. It is not how a translate's destination is expressed; that
     /// lives in [`Op::Translate`](crate::Op::Translate) and is never a region.
@@ -367,15 +372,20 @@ impl Region {
         // Clamp again to absorb floating-point drift at the edges; the shift
         // already keeps every point in range mathematically.
         let mv = |p: Point| Point::new(p.x + dx, p.y + dy).clamped();
-        match self {
-            Self::Rect(r) => Self::Rect(Rect {
+        // Re-run the deserialization checks so the result upholds exactly the
+        // invariants `from_json` enforces.
+        let moved = match self {
+            Self::Rect(r) => Rect::try_from(RectRepr {
                 min: mv(r.min),
                 max: mv(r.max),
-            }),
-            Self::Polygon(p) => Self::Polygon(Polygon {
+            })
+            .map(Self::Rect),
+            Self::Polygon(p) => Polygon::try_from(PolygonRepr {
                 points: p.points.iter().copied().map(mv).collect(),
-            }),
-        }
+            })
+            .map(Self::Polygon),
+        };
+        moved.unwrap_or_else(|_| self.clone())
     }
 }
 
@@ -511,6 +521,49 @@ mod tests {
         assert_eq!(pinned.min().y, 0.0);
         assert!((pinned.width() - 0.2).abs() < EPS);
         assert_eq!(r.shifted(f64::NAN, f64::INFINITY), r);
+    }
+
+    /// The next representable `f64` above `v` (for positive `v`).
+    fn next_up(v: f64) -> f64 {
+        f64::from_bits(v.to_bits() + 1)
+    }
+
+    fn reloads(r: &Region) -> bool {
+        serde_json::from_str::<Region>(&serde_json::to_string(r).unwrap())
+            .ok()
+            .as_ref()
+            == Some(r)
+    }
+
+    #[test]
+    fn shifted_never_collapses_a_region() {
+        // A 1-ulp-wide rect near 0.1: shifting it into [0.5, 1) rounds both
+        // edges to the same value, which used to give a zero-width rect that
+        // `from_json` then rejected.
+        let x = 0.1;
+        let thin = Region::rect(Point::new(x, 0.1), Point::new(next_up(x), 0.3)).unwrap();
+        let moved = thin.shifted(0.5, 0.1);
+        assert!(moved.bounds().width() > 0.0);
+        assert!(reloads(&moved));
+        // It stays where it was rather than collapsing.
+        assert_eq!(moved, thin);
+
+        // Same for a polygon whose area rounds away.
+        let sliver = Region::polygon([
+            Point::new(x, 0.1),
+            Point::new(next_up(x), 0.1),
+            Point::new(x, 0.3),
+        ])
+        .unwrap();
+        let moved = sliver.shifted(0.5, 0.0);
+        assert!(reloads(&moved));
+        assert_eq!(moved, sliver);
+
+        // An ordinary shift still moves and still reloads.
+        let r = Region::rect(Point::new(0.1, 0.1), Point::new(0.3, 0.2)).unwrap();
+        let moved = r.shifted(0.5, 0.5);
+        assert_ne!(moved, r);
+        assert!(reloads(&moved));
     }
 
     #[test]

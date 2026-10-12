@@ -13,7 +13,8 @@ pub enum Anchor {
     /// The center of the region's bounding rectangle (the spec's default).
     #[default]
     Center,
-    /// A fixed point in normalized image coordinates.
+    /// A fixed point in normalized image coordinates, within `0.0..=1.0` on
+    /// both axes (checked by [`Op::validate`]).
     Point(Point),
 }
 
@@ -117,7 +118,12 @@ impl Op {
         }
     }
 
-    /// Checks the parameters: every number finite, scale factors positive.
+    /// Checks the parameters: every number finite, scale factors positive,
+    /// and an [`Anchor::Point`] inside the image (`0.0..=1.0` on both axes).
+    ///
+    /// The editor calls this on [`add_edit`](crate::Editor::add_edit) and
+    /// [`set_op`](crate::Editor::set_op), and loading a document calls it on
+    /// every edit, so a stored op always passes.
     pub fn validate(&self) -> Result<(), OpError> {
         let finite = |v: f64| {
             if v.is_finite() {
@@ -186,8 +192,9 @@ impl Op {
 fn validate_anchor(anchor: Anchor) -> Result<(), OpError> {
     match anchor {
         Anchor::Center => Ok(()),
-        Anchor::Point(p) if p.x.is_finite() && p.y.is_finite() => Ok(()),
-        Anchor::Point(_) => Err(OpError::NotFinite),
+        Anchor::Point(p) if !(p.x.is_finite() && p.y.is_finite()) => Err(OpError::NotFinite),
+        Anchor::Point(p) if (0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y) => Ok(()),
+        Anchor::Point(_) => Err(OpError::AnchorOutOfRange),
     }
 }
 
@@ -235,6 +242,9 @@ pub enum OpError {
     NotFinite,
     /// A scale factor was zero or negative (use mirror to flip).
     NonPositiveScale,
+    /// An [`Anchor::Point`] was outside the image (`0.0..=1.0` on either
+    /// axis). Clamp it (e.g. with [`Point::clamped`]) before passing it in.
+    AnchorOutOfRange,
 }
 
 impl fmt::Display for OpError {
@@ -242,6 +252,7 @@ impl fmt::Display for OpError {
         f.write_str(match self {
             Self::NotFinite => "operation parameter is not a finite number",
             Self::NonPositiveScale => "scale factors must be positive",
+            Self::AnchorOutOfRange => "anchor point outside the image (0..1)",
         })
     }
 }
@@ -290,6 +301,33 @@ mod tests {
         );
         assert!(Op::Hint.validate().is_ok());
         assert!(Op::uniform_scale(2.0).validate().is_ok());
+    }
+
+    #[test]
+    fn validate_requires_anchor_point_inside_image() {
+        let rotate = |x, y| Op::Rotate {
+            degrees: 10.0,
+            anchor: Anchor::Point(Point::new(x, y)),
+        };
+        let scale = |x, y| Op::Scale {
+            sx: 2.0,
+            sy: 2.0,
+            anchor: Anchor::Point(Point::new(x, y)),
+        };
+        for (x, y) in [(-0.01, 0.5), (0.5, 1.01), (-50.0, 9e9)] {
+            assert_eq!(rotate(x, y).validate(), Err(OpError::AnchorOutOfRange));
+            assert_eq!(scale(x, y).validate(), Err(OpError::AnchorOutOfRange));
+        }
+        assert_eq!(rotate(f64::NAN, 0.5).validate(), Err(OpError::NotFinite));
+        assert_eq!(
+            scale(0.5, f64::INFINITY).validate(),
+            Err(OpError::NotFinite)
+        );
+        // The edges are inside the image.
+        for (x, y) in [(0.0, 0.0), (1.0, 1.0), (0.25, 0.75)] {
+            assert!(rotate(x, y).validate().is_ok());
+            assert!(scale(x, y).validate().is_ok());
+        }
     }
 
     #[test]
