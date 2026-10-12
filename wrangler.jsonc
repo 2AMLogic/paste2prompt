@@ -1,0 +1,37 @@
+// Cloudflare Workers static-assets deployment for paste2prompt.
+//
+// Assets only: there is no Worker script, so nothing runs server-side and
+// dist/_headers (the CSP, written by scripts/write_headers.py) applies to
+// every response. Deploying, and attaching paste2prompt.com as a custom
+// domain, are operator steps (issue #14).
+//
+// Privacy (CLAUDE.md rule 1): the CI bundle scan cannot see scripts that
+// Cloudflare injects at the edge. Those are zone settings, not settings in
+// this file, so the operator must keep them off for the zone:
+//   - Web Analytics / RUM automatic setup (it injects a beacon script),
+//   - Zaraz,
+//   - Rocket Loader, and any other HTML-rewriting feature.
+// The CSP is the backstop: it blocks scripts and connections to any other
+// origin, and inline scripts other than trunk's hashed loader.
+{
+  "name": "paste2prompt",
+  "compatibility_date": "2026-10-01",
+
+  // `wrangler deploy` (and `--dry-run`) builds first, and the privacy guard
+  // must pass before anything is uploaded.
+  "build": {
+    "command": "cd crates/web && trunk build --release && cd ../.. && python3 scripts/write_headers.py dist && python3 scripts/privacy_check.py --dist dist --web-crate crates/web"
+  },
+
+  "assets": {
+    "directory": "./dist"
+  },
+
+  // No request logs or traces are kept for this Worker.
+  "observability": {
+    "enabled": false
+  },
+
+  // Don't send wrangler CLI usage metrics from deploys of this project.
+  "send_metrics": false
+}

@@ -75,6 +75,35 @@ jobs:
         working-directory: crates/web
         run: trunk build --release
 
+      # CLAUDE.md rule 1: no network requests after load. Writes the CSP into
+      # dist/_headers, then scans the built bundle (JS glue, inline scripts,
+      # wasm imports), the crates/web sources and the CSP itself.
+      - name: privacy guard
+        run: |
+          python3 scripts/write_headers.py dist
+          python3 scripts/privacy_check.py --dist dist --web-crate crates/web
+
+      # Validates wrangler.jsonc and the asset upload without credentials.
+      # Its build step reruns trunk (cached) and the privacy guard. wrangler
+      # and its whole dependency tree are pinned by package-lock.json.
+      - name: Install wrangler (npm ci)
+        run: npm ci --no-audit --no-fund
+
+      - name: wrangler deploy --dry-run
+        run: npx --no-install wrangler deploy --dry-run
+        env:
+          WRANGLER_SEND_METRICS: "false"
+
+  privacy-guard-tests:
+    name: privacy guard tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Regression tests for scripts/privacy_check.py against fake dist/
+      # trees (no build needed), including every bypass found in review.
+      - name: test_privacy_check.py
+        run: python3 -B scripts/test_privacy_check.py
+
   licenses:
     name: dependency licenses
     runs-on: ubuntu-latest
