@@ -14,9 +14,10 @@
 //! Every mark is encoded redundantly, because models misread marks in
 //! different ways (`docs/related-work.md`, "Visually Prompted Benchmarks Are
 //! Surprisingly Fragile"): a high-contrast outline with a white halo, a large
-//! numbered badge at the region's top-left, a per-edit color, and the same
-//! number and color on the edit's caption row, whose text spells out the
-//! coordinates and the change.
+//! numbered badge at the region's top-left (outside the region where it fits,
+//! so it never hides the pixels it labels; see [`badge_positions`]), a
+//! per-edit color, and the same number and color on the edit's caption row,
+//! whose text spells out the coordinates and the change.
 //!
 //! - Region outlines are solid. Ghosts (where a translate, scale, rotate or
 //!   mirror would put the region) are dashed in the same color, so they read as
@@ -32,6 +33,7 @@
 //! the edit list in `iTXt` is out of scope for v1).
 
 mod marks;
+mod placement;
 mod text;
 
 use std::fmt;
@@ -43,6 +45,8 @@ use crate::document::Document;
 use crate::geometry::ImageSize;
 use marks::{Badge, MarkScale, Marks, badge_width, draw_badge};
 use text::{Block, Style, Text};
+
+pub use placement::{BadgePlacement, PixelBox, badge_position, badge_positions};
 
 /// The narrowest export. A narrower image is centered on padding so the
 /// caption stays legible (spec: "a minimum width so it stays legible on
@@ -223,17 +227,19 @@ fn render_pixmap(image: &RgbaImage, doc: &Document) -> Result<Pixmap, RenderErro
             Transform::identity(),
         );
     }
+    let scale = MarkScale::for_image(size);
+    let badges = badge_positions(doc, |number| scale.badge_extent(&mut text, number));
     let mut marks = Marks {
         pixmap: &mut pixmap,
         text: &mut text,
         clip: &clip,
         origin: (ox as f32, 0.0),
         size,
-        scale: MarkScale::for_image(size),
+        scale,
     };
-    for (i, edit) in doc.edits().iter().enumerate() {
+    for (i, (edit, badge)) in doc.edits().iter().zip(&badges).enumerate() {
         let number = i + 1;
-        marks.draw_edit(number, edit, mark_color(number));
+        marks.draw_edit(number, edit, mark_color(number), badge.center);
     }
 
     // Caption band.
