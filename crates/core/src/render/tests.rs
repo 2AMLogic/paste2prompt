@@ -700,3 +700,50 @@ fn badges_on_tiny_images_stay_off_the_padding() {
         }
     }
 }
+
+#[test]
+fn badge_leaves_a_small_region_interior_untouched() {
+    // #28: a region smaller than two badges. Its badge goes outside, so
+    // every pixel inside the outline's halo is still the original image.
+    let image = test_image(800, 600);
+    let size = size_of(&image);
+    let scale = MarkScale::for_image(size);
+    let side = f64::from(scale.badge) * 1.5;
+    let (x0, y0) = (300.0, 200.0);
+    let mut ed = Editor::new(size);
+    ed.add_edit(
+        Region::rect_from_pixels(size, (x0, y0), (x0 + side, y0 + side)).unwrap(),
+        Op::Hint,
+        Some("small".into()),
+    )
+    .unwrap();
+    let doc = ed.into_document();
+    let p = render_pixmap(&image, &doc).unwrap();
+    let ox = (p.width() - image.width) / 2;
+    let inset = (scale.halo / 2.0).ceil() as u32 + 1;
+    let (ix0, iy0) = (x0 as u32 + inset, y0 as u32 + inset);
+    let (ix1, iy1) = ((x0 + side) as u32 - inset, (y0 + side) as u32 - inset);
+    for y in iy0..iy1 {
+        for x in ix0..ix1 {
+            let i = ((y * image.width + x) * 4) as usize;
+            let px = p.pixel(ox + x, y).unwrap();
+            assert_eq!(
+                [px.red(), px.green(), px.blue()],
+                [image.pixels[i], image.pixels[i + 1], image.pixels[i + 2]],
+                "mark ink inside the region at ({x}, {y})"
+            );
+        }
+    }
+    // And the badge is drawn: its color appears just outside the corner.
+    let red = mark_color(1);
+    let rgb = rgb_of(&p);
+    let w = p.width() as usize;
+    let near = (0..y0 as u32)
+        .flat_map(|y| (0..x0 as u32).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let i = (y as usize * w + (ox + x) as usize) * 3;
+            rgb[i..i + 3] == red
+        })
+        .count();
+    assert!(near > 100, "no badge up and left of the region ({near} px)");
+}

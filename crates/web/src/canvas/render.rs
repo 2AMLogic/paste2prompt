@@ -3,7 +3,7 @@
 //! badge, dashed ghost, translate arrow, mirror-axis glyph) but is not the
 //! export: the core renders that (spec §Architecture).
 
-use paste2prompt_core::{ImageSize, MirrorAxis, Op};
+use paste2prompt_core::{ImageSize, MirrorAxis, Op, badge_positions};
 use wasm_bindgen::JsValue;
 use web_sys::CanvasRenderingContext2d;
 
@@ -18,6 +18,8 @@ const GHOST: &str = "#0a84ff";
 const SELECTED: &str = "#ffcc00";
 const PREVIEW: &str = "#ff2d55";
 const BADGE_RADIUS: f64 = 11.0;
+/// Width of the badge's white ring, half of it outside `BADGE_RADIUS`.
+const BADGE_RING: f64 = 2.0;
 const HANDLE_SIZE: f64 = 9.0;
 
 /// Draws one frame. `ctx` is already scaled so one unit is one CSS pixel.
@@ -65,7 +67,14 @@ pub fn draw(
         }
     }
 
-    for (i, edit) in doc.edits().iter().enumerate() {
+    // The export's placement rule (core `badge_positions`): outside the
+    // region where it fits, so the badge never hides what it labels. The
+    // badge is a fixed size on screen, so its size in image pixels depends on
+    // the zoom.
+    let d = (2.0 * BADGE_RADIUS + BADGE_RING) / view.scale.max(f64::MIN_POSITIVE);
+    let badges = badge_positions(doc, |_| (d, d));
+
+    for (i, (edit, placed)) in doc.edits().iter().zip(&badges).enumerate() {
         let pts = screen_points(view, &edit.region().outline_pixels(size));
         let is_selected = selected == Some(edit.id());
         stroke_path(ctx, &pts, HALO, if is_selected { 6.0 } else { 4.0 });
@@ -78,8 +87,7 @@ pub fn draw(
         if let Op::Mirror { axis } = edit.op() {
             mirror_glyph(ctx, view, size, edit.region(), *axis)?;
         }
-        let corner = view.to_screen(size.to_pixels(edit.region().bounds().min()));
-        badge(ctx, corner, i + 1, is_selected)?;
+        badge(ctx, view.to_screen(placed.center), i + 1, is_selected)?;
     }
 
     if let Some(edit) = ctrl.selected_edit() {
@@ -240,7 +248,7 @@ fn badge(
     ctx.set_fill_style_str(if selected { SELECTED } else { MARK });
     ctx.fill();
     ctx.set_stroke_style_str("#fff");
-    ctx.set_line_width(2.0);
+    ctx.set_line_width(BADGE_RING);
     ctx.stroke();
     ctx.set_fill_style_str(if selected { "#000" } else { "#fff" });
     ctx.set_font("bold 12px system-ui, sans-serif");
