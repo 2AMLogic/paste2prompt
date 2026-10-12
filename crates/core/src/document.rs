@@ -12,6 +12,11 @@ use crate::op::{Ghost, Op, OpError};
 /// versions.
 pub const FORMAT_VERSION: u32 = 1;
 
+/// The largest `next_id` a document may hold: 2^53, the largest integer that
+/// survives a round trip through a JSON reader using `f64` numbers (e.g.
+/// JavaScript). Ids are always below it.
+const MAX_NEXT_ID: u64 = 1 << 53;
+
 /// A stable identifier for an edit within one [`Document`].
 ///
 /// Ids are allocated by the document, never reused, and survive undo/redo and
@@ -168,6 +173,9 @@ impl TryFrom<DocumentRepr> for Document {
         if r.version != FORMAT_VERSION {
             return Err(DocumentError::UnsupportedVersion(r.version));
         }
+        if r.next_id > MAX_NEXT_ID {
+            return Err(DocumentError::BadNextId(r.next_id));
+        }
         let mut seen = std::collections::HashSet::new();
         for e in &r.edits {
             if e.id.0 >= r.next_id || !seen.insert(e.id) {
@@ -240,10 +248,17 @@ impl Document {
         Self::try_from(repr)
     }
 
-    pub(crate) fn alloc_id(&mut self) -> EditId {
+    /// Allocates a fresh id, or `None` once every id below
+    /// [`MAX_NEXT_ID`] has been used. Never wraps, so ids are never reused,
+    /// and `next_id` stays within the range [`from_json`](Self::from_json)
+    /// accepts.
+    pub(crate) fn alloc_id(&mut self) -> Option<EditId> {
+        if self.next_id >= MAX_NEXT_ID {
+            return None;
+        }
         let id = EditId(self.next_id);
         self.next_id += 1;
-        id
+        Some(id)
     }
 
     pub(crate) fn edits_mut(&mut self) -> &mut Vec<Edit> {
@@ -264,6 +279,8 @@ pub enum DocumentError {
     UnsupportedVersion(u32),
     /// An edit id is duplicated or not below `next_id`.
     BadEditId(EditId),
+    /// `next_id` is above 2^53, the largest id counter a document may hold.
+    BadNextId(u64),
 }
 
 impl fmt::Display for DocumentError {
@@ -272,6 +289,7 @@ impl fmt::Display for DocumentError {
             Self::Json(e) => write!(f, "invalid document JSON: {e}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported document version {v}"),
             Self::BadEditId(id) => write!(f, "duplicate or out-of-range edit id {id}"),
+            Self::BadNextId(n) => write!(f, "next_id {n} is above the maximum 2^53"),
         }
     }
 }
@@ -306,7 +324,7 @@ mod tests {
             Op::Hint,
         ];
         for (i, op) in ops.into_iter().enumerate() {
-            let id = d.alloc_id();
+            let id = d.alloc_id().unwrap();
             let region = if i % 2 == 0 {
                 Region::rect(Point::new(0.12, 0.3), Point::new(0.4, 0.52)).unwrap()
             } else {
@@ -334,10 +352,43 @@ mod tests {
         assert_eq!(back.to_json(), json);
     }
 
+    /// Pins the exact v1 format for every region kind, op kind, anchor form,
+    /// mirror axis and hint form. Renaming a field or variant breaks this even
+    /// though it would still round-trip.
+    #[test]
+    fn json_shape_of_sample_is_pinned() {
+        assert_eq!(
+            sample().to_json(),
+            concat!(
+                r#"{"version":1,"image_size":{"width":1280,"height":720},"next_id":6,"edits":["#,
+                r#"{"id":1,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
+                r#""op":{"kind":"translate","dx":0.15,"dy":-0.04},"#,
+                r#""hint":"hint 0 with \"quotes\" and ünïcode"},"#,
+                r#"{"id":2,"region":{"kind":"polygon","points":[{"x":0.1,"y":0.1},{"x":0.7,"y":0.2},{"x":0.3,"y":0.6}]},"#,
+                r#""op":{"kind":"scale","sx":1.5,"sy":0.75,"anchor":{"point":{"x":0.1,"y":0.9}}},"#,
+                r#""hint":"hint 1 with \"quotes\" and ünïcode"},"#,
+                r#"{"id":3,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
+                r#""op":{"kind":"mirror","axis":"vertical"},"hint":null},"#,
+                r#"{"id":4,"region":{"kind":"polygon","points":[{"x":0.1,"y":0.1},{"x":0.7,"y":0.2},{"x":0.3,"y":0.6}]},"#,
+                r#""op":{"kind":"rotate","degrees":0.3333333333333333,"anchor":"center"},"#,
+                r#""hint":"hint 3 with \"quotes\" and ünïcode"},"#,
+                r#"{"id":5,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
+                r#""op":{"kind":"hint"},"hint":"hint 4 with \"quotes\" and ünïcode"}],"#,
+                r#""instructions":"tighten the spacing\nbetween the cards"}"#,
+            )
+        );
+        // The other mirror axis.
+        let h = serde_json::to_string(&Op::Mirror {
+            axis: MirrorAxis::Horizontal,
+        })
+        .unwrap();
+        assert_eq!(h, r#"{"kind":"mirror","axis":"horizontal"}"#);
+    }
+
     #[test]
     fn json_shape_is_stable() {
         let mut d = Document::new(ImageSize::new(10, 20).unwrap());
-        let id = d.alloc_id();
+        let id = d.alloc_id().unwrap();
         d.edits.push(Edit::new(
             id,
             Region::rect(Point::new(0.0, 0.0), Point::new(0.5, 0.25)).unwrap(),
@@ -369,6 +420,48 @@ mod tests {
             Err(DocumentError::Json(_))
         ));
         assert!(Document::from_json("{").is_err());
+        // Anchor points must be inside the image (the sample's scale anchor
+        // is (0.1, 0.9)).
+        for bad in [
+            r#""anchor":{"point":{"x":-50.0,"y":9e9}}"#,
+            r#""anchor":{"point":{"x":0.1,"y":1.5}}"#,
+        ] {
+            let json = good.replacen(r#""anchor":{"point":{"x":0.1,"y":0.9}}"#, bad, 1);
+            assert_ne!(json, good);
+            assert!(matches!(
+                Document::from_json(&json),
+                Err(DocumentError::Json(_))
+            ));
+        }
+        // An id counter that would overflow is rejected, not panicked on.
+        let huge = good.replacen(r#""next_id":6"#, r#""next_id":18446744073709551615"#, 1);
+        assert_eq!(
+            Document::from_json(&huge),
+            Err(DocumentError::BadNextId(u64::MAX))
+        );
+    }
+
+    #[test]
+    fn ids_never_overflow_or_repeat() {
+        let at_max = sample().to_json().replacen(
+            r#""next_id":6"#,
+            &format!(r#""next_id":{MAX_NEXT_ID}"#),
+            1,
+        );
+        let mut d = Document::from_json(&at_max).unwrap();
+        assert_eq!(d.alloc_id(), None);
+        assert_eq!(d.alloc_id(), None);
+
+        let below = sample().to_json().replacen(
+            r#""next_id":6"#,
+            &format!(r#""next_id":{}"#, MAX_NEXT_ID - 1),
+            1,
+        );
+        let mut d = Document::from_json(&below).unwrap();
+        assert_eq!(d.alloc_id(), Some(EditId(MAX_NEXT_ID - 1)));
+        assert_eq!(d.alloc_id(), None);
+        // What it saves still loads.
+        assert!(Document::from_json(&d.to_json()).is_ok());
     }
 
     #[test]
