@@ -10,3 +10,7 @@ publish.workspace = true
 # Keep this crate free of web-sys / wasm-bindgen: it is tested natively with
 # `cargo test` and must build unchanged for wasm32-unknown-unknown.
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+# `float_roundtrip` makes f64 coordinates parse back bit-for-bit, so JSON
+# round trips are lossless.
+serde_json = { version = "1", features = ["float_roundtrip"] }
