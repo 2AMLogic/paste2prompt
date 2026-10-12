@@ -14,3 +14,7 @@ serde = { version = "1", features = ["derive"] }
 # `float_roundtrip` makes f64 coordinates parse back bit-for-bit, so JSON
 # round trips are lossless.
 serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[dev-dependencies]
+# Inline snapshot tests for the caption text (Apache-2.0).
+insta = "1.49.0"
