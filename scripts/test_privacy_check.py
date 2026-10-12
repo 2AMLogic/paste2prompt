@@ -951,6 +951,137 @@ class NavigationResiduals(GuardTest):
         (self.fx.dist / self.WASM).write_bytes(good + b"\x0b" + _uleb(len(bad)) + bad)
         self.assertFails("cannot parse wasm data section")
 
+    def test_section_size_past_eof_fails_closed(self):
+        # A custom section (id 0) that claims more bytes than the file has.
+        # Both scans must fail rather than stop walking and scan nothing.
+        lying = b"\0asm\x01\0\0\0" + b"\x00" + _uleb(1000) + b"\x04name"
+        (self.fx.dist / self.WASM).write_bytes(lying)
+        self.assertFails("cannot parse wasm import section", "past the end of the file")
+        with self.assertRaisesRegex(ValueError, "past the end of the file"):
+            privacy_check.wasm_data(lying)
+        good = wasm_with_imports(["__wbindgen_throw"], data=[b"x"])
+        with self.assertRaisesRegex(ValueError, "past the end of the file"):
+            privacy_check.wasm_data(good[:-1])  # the data section itself is truncated
+
+
+class W3cNamespaces(GuardTest):
+    """#33: the fixed XML namespace URIs are exempt; nothing near them is."""
+
+    WASM = NavigationResiduals.WASM
+    NAMESPACES = [
+        "http://www.w3.org/2000/svg",
+        "http://www.w3.org/1998/Math/MathML",
+        "http://www.w3.org/1999/xhtml",
+        "http://www.w3.org/1999/xlink",
+        "http://www.w3.org/XML/1998/namespace",
+        "http://www.w3.org/2000/xmlns/",
+    ]
+    # Fail in every scan: another host, another scheme, another case, a
+    # shorter or different w3.org path.
+    LOOKALIKES = [
+        "http://www.w3.org.evil.example/2000/svg",
+        "https://www.w3.org/2000/svg/../../x",
+        "https://www.w3.org/2000/svg",
+        "HTTP://WWW.W3.ORG/2000/svg",
+        "http://www.w3.org/2000/SVG",
+        "http://w3.org/2000/svg",
+        "http://www.w3.org@evil.example/2000/svg",
+        "http://www.w3.org/2000/",
+        "http://www.w3.org/TR/SVG2/",
+        "http://www.w3.org/1999/xhtm",
+        "http://www.w3.org/XML/1998/",
+    ]
+    # A namespace URI with more path after it. These fail in JS and Rust,
+    # where the literal must end right after the URI, but pass in wasm data,
+    # where a prefix match is unavoidable (no terminator). The host is still
+    # www.w3.org, so no other origin is reachable.
+    EXTENDED = [
+        "http://www.w3.org/2000/svgevil.example",
+        "http://www.w3.org/2000/svg/../../x",
+        "http://www.w3.org/1999/xhtml?d=1",
+    ]
+
+    def rust(self, code: str) -> None:
+        self.fx.write("crates/web/src/main.rs", MAIN_RS + code)
+
+    def js(self, line: str) -> None:
+        self.fx.write("dist/snippets/ns/n.js", line + "\n")
+
+    def wasm(self, *data: bytes) -> None:
+        (self.fx.dist / self.WASM).write_bytes(wasm_with_imports(["__wbindgen_throw"], data=list(data)))
+
+    def test_namespaces_pass_in_rust(self):
+        for ns in self.NAMESPACES:
+            with self.subTest(ns=ns):
+                self.rust(f'fn f(d: &web_sys::Document) {{ d.create_element_ns(Some("{ns}"), "x").ok(); }}\n'
+                          f'const R: &str = r#"{ns}"#;\n')
+                self.assertPasses()
+
+    def test_namespaces_pass_in_js(self):
+        for ns in self.NAMESPACES:
+            for q in "\"'`":
+                with self.subTest(ns=ns, quote=q):
+                    self.js(f"const e = document.createElementNS({q}{ns}{q}, 'x');")
+                    self.assertPasses()
+
+    def test_namespaces_pass_in_wasm_data_as_prefixes(self):
+        for ns in self.NAMESPACES:
+            with self.subTest(ns=ns):
+                # As rustc packs it: the next string's bytes follow directly.
+                self.wasm(b"before" + ns.encode() + b"\x1f\x02circlehttp-ish", ns.encode())
+                self.assertPasses()
+
+    def test_external_url_after_a_namespace_still_fails(self):
+        self.wasm(b"http://www.w3.org/2000/svghttps://evil.example/?d=")
+        out = self.assertFails("data segment 0 at 26", "'https://evil.example/?d='")
+        self.assertNotIn("at 0:", out)
+        self.rust('const U: (&str, &str) = ("http://www.w3.org/2000/svg", "https://evil.example");\n')
+        self.js("e('http://www.w3.org/2000/svg', 'https://evil.example');")
+        self.assertFails("main.rs:7", "n.js:1", "'\"https:'", "\"'https:\"")
+
+    def test_lookalikes_fail_everywhere(self):
+        for url in self.LOOKALIKES:
+            with self.subTest(url=url, scan="rust"):
+                self.rust(f'const U: &str = "{url}";\n')
+                self.assertFails("main.rs:7", "string literal naming another origin")
+            self.rust("")
+            with self.subTest(url=url, scan="js"):
+                self.js(f"a.href = '{url}';")
+                self.assertFails("n.js:1", "string literal naming another origin")
+            self.fx.write("dist/snippets/ns/n.js", "\n")
+            with self.subTest(url=url, scan="wasm"):
+                self.wasm(b"x" + url.encode() + b"\x00")
+                self.assertFails("data segment 0", "URL or http-equiv in wasm data")
+            self.wasm(b"x")
+
+    def test_extended_namespace_fails_in_source(self):
+        for url in self.EXTENDED:
+            with self.subTest(url=url, scan="rust"):
+                self.rust(f'const U: &str = "{url}";\n')
+                self.assertFails("main.rs:7", "string literal naming another origin")
+            self.rust("")
+            with self.subTest(url=url, scan="js"):
+                self.js(f'a.href = "{url}";')
+                self.assertFails("n.js:1", "string literal naming another origin")
+            self.fx.write("dist/snippets/ns/n.js", "\n")
+
+    def test_extended_namespace_passes_in_wasm_data(self):
+        # Documented choice (module docstring): a prefix match in wasm data.
+        for url in self.EXTENDED:
+            with self.subTest(url=url):
+                self.wasm(url.encode())
+                self.assertPasses()
+
+    def test_leading_whitespace_is_not_a_namespace(self):
+        self.rust('const U: &str = " http://www.w3.org/2000/svg";\n')
+        self.js("e(' http://www.w3.org/2000/svg');")
+        self.assertFails("main.rs:7", "n.js:1")
+
+    def test_mismatched_quotes_are_not_a_namespace(self):
+        # The JS literal must be closed by the quote that opened it.
+        self.js("e('http://www.w3.org/2000/svg\"');")
+        self.assertFails("n.js:1", "string literal naming another origin")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

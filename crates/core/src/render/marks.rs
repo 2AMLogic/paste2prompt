@@ -45,6 +45,19 @@ impl MarkScale {
             badge,
         }
     }
+
+    /// Width of the ring around a solid (source) badge.
+    pub fn solid_ring(self) -> f32 {
+        (self.halo - self.stroke) / 2.0 + 1.0
+    }
+
+    /// The full (width, height) of edit `number`'s solid badge, ring
+    /// included, in image pixels: what [`super::badge_positions`] places.
+    pub fn badge_extent(self, text: &mut Text, number: usize) -> (f64, f64) {
+        let ring = 2.0 * self.solid_ring();
+        let w = badge_width(text, number, self.badge) + ring;
+        (f64::from(w), f64::from(self.badge + ring))
+    }
 }
 
 /// Draws onto the image area of the export canvas.
@@ -62,8 +75,9 @@ pub(super) struct Marks<'a> {
 
 impl Marks<'_> {
     /// Draws everything for one edit: ghost first (so the source outline and
-    /// badge stay on top), then the region outline, then the badge.
-    pub fn draw_edit(&mut self, number: usize, edit: &Edit, rgb: [u8; 3]) {
+    /// badge stay on top), then the region outline, then the badge centered
+    /// on `badge` (image pixels, from [`super::badge_positions`]).
+    pub fn draw_edit(&mut self, number: usize, edit: &Edit, rgb: [u8; 3], badge: (f64, f64)) {
         let outline = edit.region().outline_pixels(self.size);
         let source = self.path(&outline, true);
 
@@ -82,11 +96,19 @@ impl Marks<'_> {
                     let to = self.size.to_pixels(ghost.center());
                     self.arrow(from, to, rgb);
                     // A hollow badge at the destination, unless it would be
-                    // off the image or crowd the source badge on a short move.
+                    // off the image, or the move is short (under two badges,
+                    // where the ghost badge would sit on the source outline),
+                    // or it would crowd the source badge, which may now sit
+                    // outside its region (`badge_positions`). 1.5 badges
+                    // between centers leaves a gap even for a two-digit
+                    // capsule next to a circle.
                     let (gx, gy) = bounds_min(&points);
-                    let (sx, sy) = self.size.to_pixels(edit.region().bounds().min());
+                    let (cx, cy) = self.size.to_pixels(edit.region().bounds().min());
+                    let (sx, sy) = badge;
                     let (iw, ih) = (f64::from(self.size.width()), f64::from(self.size.height()));
-                    let clear = (gx - sx).hypot(gy - sy) >= 2.0 * f64::from(self.scale.badge);
+                    let b = f64::from(self.scale.badge);
+                    let clear =
+                        (gx - cx).hypot(gy - cy) >= 2.0 * b && (gx - sx).hypot(gy - sy) >= 1.5 * b;
                     if clear && (0.0..iw).contains(&gx) && (0.0..ih).contains(&gy) {
                         self.badge(number, (gx, gy), rgb, true);
                     }
@@ -104,8 +126,7 @@ impl Marks<'_> {
         if let Some(path) = source {
             self.solid(&path, rgb);
         }
-        let b = edit.region().bounds();
-        self.badge(number, self.size.to_pixels(b.min()), rgb, false);
+        self.badge(number, badge, rgb, false);
     }
 
     fn paint(rgb: [u8; 3]) -> Paint<'static> {
@@ -266,16 +287,13 @@ impl Marks<'_> {
     }
 
     /// A numbered badge centered on `corner` (image pixels), nudged so it
-    /// stays wholly inside the image. A ghost badge is hollow (white with a
+    /// stays wholly inside the image (a no-op for a source badge, which
+    /// [`super::badge_positions`] already placed inside). A ghost badge is hollow (white with a
     /// colored ring and number) so it can't be mistaken for the source.
     fn badge(&mut self, number: usize, corner: (f64, f64), rgb: [u8; 3], hollow: bool) {
         let s = self.scale;
         let h = if hollow { s.badge * 0.8 } else { s.badge };
-        let ring = if hollow {
-            s.stroke
-        } else {
-            (s.halo - s.stroke) / 2.0 + 1.0
-        };
+        let ring = if hollow { s.stroke } else { s.solid_ring() };
         let w = badge_width(self.text, number, h);
         let (iw, ih) = (self.size.width() as f32, self.size.height() as f32);
         let fit = |v: f64, half: f32, max: f32| {

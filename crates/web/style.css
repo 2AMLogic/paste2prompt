@@ -29,7 +29,7 @@ h1 {
 .stage {
   display: block;
   width: 100%;
-  height: calc(100vh - 11rem);
+  height: calc(100vh - 17rem);
   min-height: 320px;
   border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
   border-radius: 6px;
@@ -83,6 +83,171 @@ h1 {
 .canvas-status {
   opacity: 0.75;
   font-variant-numeric: tabular-nums;
+}
+
+/* Canvas column (canvas + instructions) beside the history panel (#11);
+   the panel wraps below on narrow screens. */
+.workspace {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.workspace-main {
+  flex: 1 1 32rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.instructions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.instructions-label {
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+
+.instructions-input {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  resize: vertical;
+  min-height: 3.5rem;
+}
+
+.history-panel {
+  flex: 1 1 18rem;
+  max-width: 28rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.history-header h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.history-undo {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.history-empty {
+  margin: 0;
+  opacity: 0.7;
+}
+
+.history-empty[hidden] {
+  display: none;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border-radius: 6px;
+  padding: 0.15rem;
+  background: Canvas;
+}
+
+.history-row.selected {
+  border-color: #ffcc00;
+}
+
+.history-row.dragging {
+  opacity: 0.7;
+  box-shadow: 0 2px 8px color-mix(in srgb, CanvasText 30%, transparent);
+}
+
+/* touch-action: none hands the grip's touch drags to Pointer Events. */
+.history-grip {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  padding: 0 0.25rem;
+  opacity: 0.6;
+}
+
+.history-row.dragging .history-grip {
+  cursor: grabbing;
+}
+
+.history-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0.25rem 0.4rem;
+}
+
+.history-select[aria-pressed="true"] {
+  background: color-mix(in srgb, Highlight 20%, transparent);
+}
+
+.history-op {
+  font-weight: 600;
+}
+
+.history-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.history-action {
+  padding: 0.2rem 0.5rem;
+}
+
+/* The same colors as the canvas badges (canvas/render.rs: MARK, SELECTED). */
+.badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background: #ff2d55;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-row.selected .badge {
+  background: #ffcc00;
+  color: #000;
 }
 
 header {
