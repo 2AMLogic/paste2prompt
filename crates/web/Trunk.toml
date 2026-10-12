@@ -1,0 +1,4 @@
+[build]
+target = "index.html"
+# Output to the repo-root dist/ (gitignored) so hosting has one fixed path.
+dist = "../../dist"

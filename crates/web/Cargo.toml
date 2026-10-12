@@ -1,0 +1,13 @@
+[package]
+name = "paste2prompt-web"
+description = "Browser shell for paste2prompt: Leptos CSR app with a Canvas2D view."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+paste2prompt-core.workspace = true
+leptos.workspace = true
+console_error_panic_hook.workspace = true
