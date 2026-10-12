@@ -20,9 +20,11 @@
 //!
 //! [`HistoryPanel`] installs a small window `keydown` listener for `⌘Z` /
 //! `Ctrl+Z` (undo) and `⌘⇧Z` / `Ctrl+Shift+Z` / `Ctrl+Y` (redo), decided by
-//! [`rules::history_key`]. It ignores keys while a text field has focus, so
-//! native text undo applies there, and calls `preventDefault` only when an
-//! undo or redo actually happened. The central keymap (#13) should absorb
+//! [`rules::history_key`]. It ignores keys another handler already took
+//! (`defaultPrevented`) and keys while a text field has focus, so native
+//! text undo applies there, and calls `preventDefault` only when an undo or
+//! redo actually happened. Its chords never overlap the export (`⌘C`, `⌘S`,
+//! `C`) or input (`⌘O`) shortcuts. The central keymap (#13) should absorb
 //! it: call [`rules::history_key`] from there and delete
 //! [`install_history_keys`].
 
@@ -51,6 +53,9 @@ fn report(result: Result<(), EditError>) {
 /// Undo/redo keys, for the panel's lifetime. Folds into #13's keymap.
 fn install_history_keys(ctrl: RwSignal<Controller>) {
     let handle = window_event_listener(ev::keydown, move |ev: KeyboardEvent| {
+        if ev.default_prevented() {
+            return; // another handler (export, input, a future keymap) took it
+        }
         if ev.is_composing() || target_is_editable(ev.target()) {
             return; // native text undo
         }

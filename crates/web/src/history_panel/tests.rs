@@ -107,6 +107,30 @@ fn undo_mid_reorder_reverts_it_and_later_moves_are_ignored() {
 }
 
 #[test]
+fn redo_mid_reorder_only_cancels_it_and_keeps_the_redo_stack() {
+    // The same rule as a canvas drag (#24): one key press never both throws
+    // away the drag and changes history. `Editor::redo` alone would commit
+    // the half-done reorder and clear the redo stack.
+    let mut c = loaded();
+    let [a, b, d] = three(&mut c);
+    c.move_edit(d, 0).unwrap();
+    assert!(c.undo());
+    assert!(c.can_redo());
+    assert!(c.begin_reorder());
+    c.reorder_to(a, 2).unwrap();
+    assert_eq!(order(&c), [b, d, a]);
+    assert!(c.redo());
+    assert_eq!(order(&c), [a, b, d], "the reorder was reverted");
+    assert!(c.can_redo(), "nothing was redone or discarded");
+    // The rest of that drag is ignored, like after an undo mid-reorder.
+    c.reorder_to(a, 1).unwrap();
+    c.end_reorder();
+    assert_eq!(order(&c), [a, b, d]);
+    assert!(c.redo());
+    assert_eq!(order(&c), [d, a, b]);
+}
+
+#[test]
 fn cancel_reorder_restores_the_order() {
     let mut c = loaded();
     let [a, b, d] = three(&mut c);
@@ -206,4 +230,65 @@ fn panel_calls_without_an_image_do_nothing() {
     c.end_instructions_edit();
     assert_eq!(c.instructions(), "");
     assert!(c.editor().is_none());
+}
+
+#[test]
+fn history_keys_never_collide_with_export_or_input_shortcuts() {
+    use super::rules::{Mods, history_key};
+    use crate::export::rules::{KeyContext, shortcut};
+    use crate::input::rules::{Mods as InputMods, is_open_shortcut};
+
+    let keys = ["z", "Z", "y", "Y", "c", "C", "s", "S", "o", "O", "v", "я"];
+    let codes = ["KeyZ", "KeyY", "KeyC", "KeyS", "KeyO", "KeyV"];
+    for bits in 0..16u8 {
+        let (ctrl, meta, shift, alt) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0);
+        let hm = Mods {
+            ctrl,
+            meta,
+            shift,
+            alt,
+        };
+        let im = InputMods {
+            ctrl,
+            meta,
+            shift,
+            alt,
+        };
+        for key in keys {
+            for code in codes {
+                if history_key(key, code, hm).is_none() {
+                    continue;
+                }
+                for (editable, text_selected) in [(false, false), (false, true), (true, false)] {
+                    let ctx = KeyContext {
+                        editable,
+                        text_selected,
+                    };
+                    assert_eq!(shortcut(key, im, ctx), None, "{key} {code} {bits:04b}");
+                }
+                assert!(!is_open_shortcut(key, im), "{key} {code} {bits:04b}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_export_caption_carries_the_panel_order_and_the_instructions() {
+    // main.rs hands `Exporter` a `DocumentSource` that clones exactly this
+    // document, so the exported caption is built from it.
+    use paste2prompt_core::Caption;
+    let mut c = loaded();
+    let [a, b] = [rect_at(&mut c, 10.0), rect_at(&mut c, 60.0)];
+    c.move_edit(b, 0).unwrap();
+    c.end_instructions_edit();
+    c.set_instructions("tighten the spacing");
+    c.end_instructions_edit();
+    assert_eq!(order(&c), [b, a]);
+    let text = Caption::from_document(doc(&c)).to_plain_text();
+    let last = text.lines().last().unwrap();
+    assert_eq!(last, "Overall: tighten the spacing", "{text}");
+    assert!(c.undo());
+    assert!(c.redo());
+    let again = Caption::from_document(doc(&c)).to_plain_text();
+    assert_eq!(again, text);
 }

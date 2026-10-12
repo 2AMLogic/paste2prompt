@@ -812,11 +812,11 @@ impl Controller {
         self.editor().is_some_and(Editor::can_redo)
     }
 
-    /// Undoes one step. During a drag it only cancels (reverts) the drag
-    /// and undoes no earlier step, matching [`Editor::undo`] during a
-    /// gesture.
+    /// Undoes one step. During a drag (on the canvas, or a history-panel
+    /// reorder) it only cancels (reverts) the drag and undoes no earlier
+    /// step, matching [`Editor::undo`] during a gesture.
     pub fn undo(&mut self) -> bool {
-        if self.cancel_drag() {
+        if self.cancel_in_progress() {
             self.revalidate_selection();
             return true;
         }
@@ -825,17 +825,34 @@ impl Controller {
         done
     }
 
-    /// Redoes one step. During a drag it only cancels (reverts) the drag
-    /// and redoes nothing, like [`Self::undo`]: one key press never both
-    /// throws away the drag and changes history.
+    /// Redoes one step. During a drag (on the canvas, or a history-panel
+    /// reorder) it only cancels (reverts) the drag and redoes nothing, like
+    /// [`Self::undo`]: one key press never both throws away the drag and
+    /// changes history. ([`Editor::redo`] alone would instead commit an open
+    /// reorder gesture, clearing the redo stack.)
     pub fn redo(&mut self) -> bool {
-        if self.cancel_drag() {
+        if self.cancel_in_progress() {
             self.revalidate_selection();
             return true;
         }
         let done = self.session.as_mut().is_some_and(|s| s.editor.redo());
         self.revalidate_selection();
         done
+    }
+
+    /// Cancels a canvas drag or an open history-panel reorder gesture.
+    /// Returns whether either was in progress.
+    fn cancel_in_progress(&mut self) -> bool {
+        if self.cancel_drag() {
+            return true;
+        }
+        match &mut self.session {
+            Some(s) if s.editor.in_gesture() => {
+                s.editor.cancel_gesture();
+                true
+            }
+            _ => false,
+        }
     }
 
     fn revalidate_selection(&mut self) {

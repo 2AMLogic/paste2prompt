@@ -126,6 +126,9 @@ impl ImageInput {
     }
 
     fn on_keydown(&self, ev: KeyboardEvent) {
+        if ev.default_prevented() {
+            return; // another handler took it
+        }
         let mods = Mods {
             ctrl: ev.ctrl_key(),
             meta: ev.meta_key(),
