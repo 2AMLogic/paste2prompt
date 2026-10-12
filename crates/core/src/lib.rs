@@ -28,6 +28,13 @@
 //! printed under the exported image: a fixed header, one plain-English
 //! [`CaptionLine`] per edit, then `Overall: …`. [`Caption::to_plain_text`] is
 //! the same text for "Copy caption as text".
+//!
+//! # Export
+//!
+//! [`render_export`] draws the export PNG from an [`RgbaImage`] and a
+//! [`Document`]: the original image with outlines, numbered badges and
+//! ghosts, and the caption block in a band below it, laid out with the
+//! bundled Inter font. [`mark_color`] gives each edit's color.
 
 #![warn(missing_docs)]
 
@@ -36,6 +43,7 @@ mod document;
 mod geometry;
 mod history;
 mod op;
+mod render;
 
 pub use caption::{
     ARROW, CAPTION_HEADER, Caption, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines,
@@ -44,6 +52,10 @@ pub use document::{Document, DocumentError, Edit, EditId, FORMAT_VERSION};
 pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};
 pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};
+pub use render::{
+    MAX_EXPORT_SIDE, MAX_IMAGE_PIXELS, MIN_EXPORT_WIDTH, RenderError, RgbaImage, mark_color,
+    render_export,
+};
 
 /// The product name, as shown in the UI and in the export caption header.
 pub const APP_NAME: &str = "paste2prompt";
