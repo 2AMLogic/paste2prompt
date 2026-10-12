@@ -1,11 +1,13 @@
 //! Browser entry point. Built with `trunk`; see the README for how to run it.
 
+mod export;
 mod image;
 mod input;
 
 use leptos::prelude::*;
 use paste2prompt_core::APP_NAME;
 
+use crate::export::{DocumentSource, ExportToolbar, Exporter};
 use crate::image::ImageStore;
 use crate::input::{ImageInput, ImageInputLayer, OpenButton};
 
@@ -24,6 +26,9 @@ fn App() -> impl IntoView {
     // work (#11) replaces this with "the session has at least one edit".
     let has_edits = Signal::derive(|| false);
     let input = ImageInput::new(store, has_edits);
+    // No edit model yet: exports use an empty document (image plus the
+    // header-only caption). The canvas (#10) passes its editor's document.
+    let exporter = Exporter::new(store, DocumentSource::none());
     let current = store.current();
     let empty = move || current.with(Option::is_none);
 
@@ -31,6 +36,7 @@ fn App() -> impl IntoView {
         <header>
             <h1>{APP_NAME}</h1>
             <OpenButton input />
+            <ExportToolbar exporter />
         </header>
         <main>
             <Show when=empty fallback=move || view! { <ImageInfo /> }>

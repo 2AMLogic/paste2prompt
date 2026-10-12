@@ -318,7 +318,7 @@ fn carries_files(ev: &DragEvent) -> bool {
 
 /// `true` for text fields and `contenteditable` elements, where pasting or
 /// dropping text has its own meaning.
-fn target_is_editable(target: Option<EventTarget>) -> bool {
+pub(crate) fn target_is_editable(target: Option<EventTarget>) -> bool {
     let Some(el) = target.and_then(|t| t.dyn_into::<HtmlElement>().ok()) else {
         return false;
     };

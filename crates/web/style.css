@@ -92,3 +92,43 @@ button.primary {
 .drop-overlay.visible {
   display: flex;
 }
+
+.export-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.export-busy {
+  opacity: 0.7;
+}
+
+/* Export status and failures (e.g. "Download the PNG instead?"). */
+.toast-region {
+  position: fixed;
+  left: 50%;
+  bottom: 1.5rem;
+  transform: translateX(-50%);
+  z-index: 20;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: 8px;
+  background: CanvasText;
+  color: Canvas;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+}
+
+.toast-close {
+  padding: 0 0.4rem;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+}
