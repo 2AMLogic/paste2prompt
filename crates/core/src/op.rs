@@ -50,6 +50,9 @@ impl MirrorAxis {
     }
 }
 
+/// The largest scale factor [`Op::validate`] accepts on either axis.
+pub const MAX_SCALE: f64 = 100.0;
+
 /// What the user asks the model to do with a region (spec §Operations).
 ///
 /// All offsets are normalized like every other coordinate: `dx` is a fraction
@@ -118,8 +121,13 @@ impl Op {
         }
     }
 
-    /// Checks the parameters: every number finite, scale factors positive,
-    /// and an [`Anchor::Point`] inside the image (`0.0..=1.0` on both axes).
+    /// Checks the parameters:
+    ///
+    /// - every number is finite;
+    /// - translate `dx` and `dy` are within `-1.0..=1.0` (a move past the full
+    ///   image width or height is meaningless);
+    /// - scale `sx` and `sy` are positive and at most [`MAX_SCALE`];
+    /// - an [`Anchor::Point`] is inside the image (`0.0..=1.0` on both axes).
     ///
     /// The editor calls this on [`add_edit`](crate::Editor::add_edit) and
     /// [`set_op`](crate::Editor::set_op), and loading a document calls it on
@@ -135,7 +143,11 @@ impl Op {
         match *self {
             Self::Translate { dx, dy } => {
                 finite(dx)?;
-                finite(dy)
+                finite(dy)?;
+                if !(-1.0..=1.0).contains(&dx) || !(-1.0..=1.0).contains(&dy) {
+                    return Err(OpError::OutOfRange);
+                }
+                Ok(())
             }
             Self::Scale { sx, sy, anchor } => {
                 finite(sx)?;
@@ -143,6 +155,9 @@ impl Op {
                 validate_anchor(anchor)?;
                 if sx <= 0.0 || sy <= 0.0 {
                     return Err(OpError::NonPositiveScale);
+                }
+                if sx > MAX_SCALE || sy > MAX_SCALE {
+                    return Err(OpError::OutOfRange);
                 }
                 Ok(())
             }
@@ -242,6 +257,9 @@ pub enum OpError {
     NotFinite,
     /// A scale factor was zero or negative (use mirror to flip).
     NonPositiveScale,
+    /// A translate offset was outside `-1.0..=1.0`, or a scale factor was
+    /// above [`MAX_SCALE`].
+    OutOfRange,
     /// An [`Anchor::Point`] was outside the image (`0.0..=1.0` on either
     /// axis). Clamp it (e.g. with [`Point::clamped`]) before passing it in.
     AnchorOutOfRange,
@@ -252,6 +270,7 @@ impl fmt::Display for OpError {
         f.write_str(match self {
             Self::NotFinite => "operation parameter is not a finite number",
             Self::NonPositiveScale => "scale factors must be positive",
+            Self::OutOfRange => "translate offset outside -1..1 or scale factor above 100",
             Self::AnchorOutOfRange => "anchor point outside the image (0..1)",
         })
     }
@@ -301,6 +320,45 @@ mod tests {
         );
         assert!(Op::Hint.validate().is_ok());
         assert!(Op::uniform_scale(2.0).validate().is_ok());
+    }
+
+    #[test]
+    fn validate_bounds_magnitudes() {
+        let t = |dx, dy| Op::Translate { dx, dy }.validate();
+        let s = |sx, sy| {
+            Op::Scale {
+                sx,
+                sy,
+                anchor: Anchor::Center,
+            }
+            .validate()
+        };
+        let r = |degrees| {
+            Op::Rotate {
+                degrees,
+                anchor: Anchor::Center,
+            }
+            .validate()
+        };
+        // Translate: within the full image size either way.
+        for (dx, dy) in [(1.0, -1.0), (-1.0, 1.0), (0.0, 0.0), (0.5, -0.25)] {
+            assert!(t(dx, dy).is_ok());
+        }
+        for (dx, dy) in [(-1e18, 0.0), (0.0, 1e18), (1.0001, 0.0), (0.0, -1.5)] {
+            assert_eq!(t(dx, dy), Err(OpError::OutOfRange));
+        }
+        assert_eq!(t(f64::NEG_INFINITY, 0.0), Err(OpError::NotFinite));
+        // Scale: positive and at most MAX_SCALE.
+        assert!(s(MAX_SCALE, 0.01).is_ok());
+        assert!(s(f64::MIN_POSITIVE, 1.0).is_ok());
+        assert_eq!(s(100.5, 1.0), Err(OpError::OutOfRange));
+        assert_eq!(s(1.0, 1e300), Err(OpError::OutOfRange));
+        assert_eq!(s(0.0, 1.0), Err(OpError::NonPositiveScale));
+        assert_eq!(s(1.0, -0.0), Err(OpError::NonPositiveScale));
+        assert_eq!(s(f64::NAN, 1.0), Err(OpError::NotFinite));
+        // Rotate: any finite angle.
+        assert!(r(-720.0).is_ok() && r(1e6).is_ok());
+        assert_eq!(r(f64::NAN), Err(OpError::NotFinite));
     }
 
     #[test]

@@ -420,6 +420,19 @@ mod tests {
             Err(DocumentError::Json(_))
         ));
         assert!(Document::from_json("{").is_err());
+        // Op magnitudes are bounded on load (the downstream-overflow case).
+        for (from, to) in [
+            (r#""dx":0.15"#, r#""dx":-1e18"#),
+            (r#""dy":-0.04"#, r#""dy":1.5"#),
+            (r#""sx":1.5"#, r#""sx":1e300"#),
+        ] {
+            let json = good.replacen(from, to, 1);
+            assert_ne!(json, good);
+            assert!(matches!(
+                Document::from_json(&json),
+                Err(DocumentError::Json(_))
+            ));
+        }
         // Anchor points must be inside the image (the sample's scale anchor
         // is (0.1, 0.9)).
         for bad in [
