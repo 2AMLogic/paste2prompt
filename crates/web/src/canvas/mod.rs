@@ -16,11 +16,12 @@
 //! [`CanvasState`] is provided once by `App` and shared through context.
 //! Other UI drives the canvas through its [`Controller`]:
 //!
-//! - **Shortcuts (#13):** `state.controller.update(|c| c.set_tool(Tool::Rect))`,
-//!   `c.choose_op(OpKind::Mirror)` (again toggles the axis), `c.cancel()` for
-//!   `Esc`, `c.delete_selected()`, `c.undo()` / `c.redo()`; focus
-//!   [`CanvasState::hint_input`] for `H`. Skip single-key shortcuts while
-//!   [`Controller::dragging`] is true or a text field has focus.
+//! - **Shortcuts (#13):** [`crate::keymap`] drives `c.set_tool`,
+//!   `c.choose_op` (`M` again toggles the axis), `c.cancel()` for `Esc`,
+//!   `c.delete_selected()` and `c.undo()` / `c.redo()`, and focuses
+//!   [`CanvasState::hint_input`] for `H`. Single keys are skipped while
+//!   [`Controller::dragging`] is true or a text field has focus. The
+//!   toolbar's tooltips quote the keymap.
 //! - **History panel and undo UI (#11):** read the document with
 //!   `c.editor()`, select a row with `c.select(Some(id))`, undo/redo with
 //!   `c.undo()` / `c.redo()` and `c.can_undo()` / `c.can_redo()`.
@@ -45,6 +46,8 @@ use web_sys::{CanvasRenderingContext2d, PointerEvent};
 pub use controller::{Controller, Cursor, OpKind, Pointer, Tool};
 pub use source::SourceImage;
 use view::ViewTransform;
+
+use crate::keymap::{self, rules::Action};
 
 /// Margin around the fitted image, in CSS pixels. Leaves room for badges
 /// and handles at the image edge.
@@ -294,7 +297,8 @@ pub fn CanvasToolbar() -> impl IntoView {
                 <button
                     type="button"
                     data-tool=t.label()
-                    title=format!("{} ({})", t.label(), t.key())
+                    title=keymap::titled(t.label(), Action::Tool(t))
+                    aria-keyshortcuts=keymap::aria(Action::Tool(t))
                     aria-pressed=move || (ctrl.with(Controller::tool) == t).to_string()
                     on:click=move |_| ctrl.update(|c| c.set_tool(t))
                 >
@@ -311,7 +315,8 @@ pub fn CanvasToolbar() -> impl IntoView {
                 <button
                     type="button"
                     data-op=k.label()
-                    title=format!("{} ({})", k.label(), k.key())
+                    title=keymap::titled(k.label(), Action::Op(k))
+                    aria-keyshortcuts=keymap::aria(Action::Op(k))
                     aria-pressed=move || (ctrl.with(Controller::op_kind) == k).to_string()
                     on:click=move |_| {
                         ctrl.update(|c| report(c.choose_op(k)));
@@ -369,7 +374,7 @@ pub fn CanvasToolbar() -> impl IntoView {
                 <button
                     type="button"
                     data-action="mirror-axis"
-                    title="Toggle mirror axis (M)"
+                    title=format!("Toggle mirror axis ({} again)", keymap::hint(Action::Op(OpKind::Mirror)))
                     on:click=move |_| ctrl.update(|c| report(c.toggle_mirror_axis()))
                 >
                     {axis_label}
@@ -393,7 +398,7 @@ pub fn CanvasToolbar() -> impl IntoView {
             <button
                 type="button"
                 data-action="delete"
-                title="Delete the selected edit (Delete)"
+                title=keymap::titled("Delete the selected edit", Action::DeleteSelected)
                 disabled=move || !has_selection()
                 on:click=move |_| {
                     ctrl.update(|c| {

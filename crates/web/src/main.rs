@@ -5,6 +5,7 @@ mod export;
 mod history_panel;
 mod image;
 mod input;
+mod keymap;
 
 use leptos::prelude::*;
 use paste2prompt_core::APP_NAME;
@@ -14,6 +15,7 @@ use crate::export::{DocumentSource, ExportToolbar, Exporter};
 use crate::history_panel::{HistoryPanel, InstructionsBox};
 use crate::image::ImageStore;
 use crate::input::{ImageInput, ImageInputLayer, OpenButton};
+use crate::keymap::{ShortcutLayer, Shortcuts, ShortcutsButton, rules::Action as KeyAction};
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -22,11 +24,12 @@ fn main() {
 
 /// App shell: header with **Open**, the empty state until an image is
 /// loaded, then the canvas view with its tools, the instructions box and
-/// the history panel.
+/// the history panel, plus the keyboard shortcuts and their `?` sheet.
 #[component]
 fn App() -> impl IntoView {
     let store = ImageStore::provide();
     let canvas = CanvasState::provide();
+    Shortcuts::provide();
     let input = ImageInput::new(store, canvas.has_edits());
     // Exports read the canvas editor's document (edits and hints) at the
     // gesture. `None` (no session yet) falls back to an empty document.
@@ -68,18 +71,24 @@ fn App() -> impl IntoView {
     #[cfg(not(debug_assertions))]
     let dev_tools = || ();
     let empty = move || image.with(Option::is_none);
+    let empty_hint = format!(
+        "{} to paste · {} to open · ? for shortcuts",
+        keymap::hint(KeyAction::PasteImage),
+        keymap::hint(KeyAction::OpenFile),
+    );
 
     view! {
         <header>
             <h1>{APP_NAME}</h1>
             <OpenButton input />
             <ExportToolbar exporter />
+            <ShortcutsButton />
         </header>
         <main>
             <Show when=empty fallback=move || view! { <ImageInfo /> }>
                 <section class="empty-state">
                     <p class="empty-title">"Paste, drop, or open an image"</p>
-                    <p class="empty-hint">"⌘V / Ctrl+V to paste · ⌘O / Ctrl+O to open"</p>
+                    <p class="empty-hint">{empty_hint.clone()}</p>
                     <OpenButton input class="primary" />
                     {dev_tools}
                 </section>
@@ -96,6 +105,7 @@ fn App() -> impl IntoView {
             </section>
         </main>
         <ImageInputLayer input />
+        <ShortcutLayer input exporter />
     }
 }
 

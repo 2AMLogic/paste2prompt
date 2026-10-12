@@ -26,12 +26,10 @@
 //!   an empty document.
 //!   A document whose image size doesn't match the current image is an
 //!   error (shown in the toast), never silently replaced.
-//! - **Keyboard (#13):** the three shortcuts are registered by a small local
-//!   `keydown` listener ([`ExportToolbar`] installs it). The decision is the
-//!   pure [`rules::shortcut`]; when #13 builds the central keymap it should
-//!   call `rules::shortcut` (or bind the same chords) and dispatch to
-//!   [`Exporter::run`], then delete `Exporter::install_shortcuts`. The
-//!   listener skips events another handler already `preventDefault`ed.
+//! - **Keyboard (#13):** the central keymap ([`crate::keymap`]) binds the
+//!   three shortcuts and calls [`Exporter::run`]. `⌘C` yields to text
+//!   fields and page text selections; `⌘S` always suppresses the browser's
+//!   "Save page".
 //!
 //! # Browser notes
 //!
@@ -49,15 +47,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
-use leptos::{ev, prelude::*, task::spawn_local};
+use leptos::{prelude::*, task::spawn_local};
 use paste2prompt_core::{Caption, Document, ImageSize, RenderError, export_size_ok, render_export};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{JsFuture, future_to_promise};
-use web_sys::{Blob, BlobPropertyBag, Clipboard, ClipboardItem, HtmlAnchorElement, KeyboardEvent};
+use web_sys::{Blob, BlobPropertyBag, Clipboard, ClipboardItem, HtmlAnchorElement};
 
 use crate::image::{ImageStore, LoadedImage};
-use crate::input::target_is_editable;
-use rules::{Action, CopyFailure, KeyContext, Mods, Timestamp};
+use crate::keymap::{self, rules::Action as KeyAction};
+use rules::{Action, CopyFailure, Timestamp};
 
 const PNG: &str = "image/png";
 /// How long a plain status toast stays up.
@@ -302,58 +300,24 @@ impl Exporter {
         self.toast.set(None);
     }
 
-    fn on_keydown(&self, ev: KeyboardEvent) {
-        if ev.default_prevented() {
-            return; // another handler (e.g. a future central keymap) took it
-        }
-        let mods = Mods {
-            ctrl: ev.ctrl_key(),
-            meta: ev.meta_key(),
-            shift: ev.shift_key(),
-            alt: ev.alt_key(),
-        };
-        let ctx = KeyContext {
-            editable: target_is_editable(ev.target()),
-            text_selected: page_text_selected(),
-        };
-        let Some(action) = rules::shortcut(&ev.key(), mods, ctx) else {
-            return;
-        };
-        let has_image = self.store.current().with_untracked(Option::is_some);
-        match action {
-            // Never let ⌘S open the browser's "Save page" dialog.
-            Action::Download => ev.prevent_default(),
-            // Without an image, ⌘C and C keep their ordinary meaning.
-            _ if !has_image => return,
-            _ => ev.prevent_default(),
-        }
-        if has_image && !ev.repeat() {
-            self.run(action);
-        }
-    }
-
-    /// The local shortcut listener, for this component's lifetime. #13's
-    /// central keymap replaces it (see module docs).
-    fn install_shortcuts(&self) {
-        let this = *self;
-        let handle = window_event_listener(ev::keydown, move |e| this.on_keydown(e));
-        on_cleanup(move || handle.remove());
+    /// `true` when an image is loaded (not tracked).
+    pub fn has_image(&self) -> bool {
+        self.store.current().with_untracked(Option::is_some)
     }
 }
 
-/// The export buttons and the toast, plus the `⌘C` / `⌘S` / `C` shortcuts.
-/// Mount once.
+/// The export buttons and the toast. Mount once. Their shortcuts are in
+/// [`crate::keymap`].
 #[component]
 pub fn ExportToolbar(exporter: Exporter) -> impl IntoView {
-    exporter.install_shortcuts();
     let disabled = move || !exporter.ready();
     let toast = exporter.toast;
     view! {
         <div class="export-toolbar" role="group" aria-label="Export" aria-busy=move || exporter.busy.get().to_string()>
             <button
                 type="button"
-                aria-keyshortcuts="Meta+C Control+C"
-                title="Copy the export image (⌘C / Ctrl+C)"
+                aria-keyshortcuts=keymap::aria(KeyAction::CopyImage)
+                title=keymap::titled("Copy the export image", KeyAction::CopyImage)
                 disabled=disabled
                 on:click=move |_| exporter.run(Action::CopyImage)
             >
@@ -361,8 +325,8 @@ pub fn ExportToolbar(exporter: Exporter) -> impl IntoView {
             </button>
             <button
                 type="button"
-                aria-keyshortcuts="Meta+S Control+S"
-                title="Download the export PNG (⌘S / Ctrl+S)"
+                aria-keyshortcuts=keymap::aria(KeyAction::Download)
+                title=keymap::titled("Download the export PNG", KeyAction::Download)
                 disabled=disabled
                 on:click=move |_| exporter.run(Action::Download)
             >
@@ -370,8 +334,8 @@ pub fn ExportToolbar(exporter: Exporter) -> impl IntoView {
             </button>
             <button
                 type="button"
-                aria-keyshortcuts="C"
-                title="Copy the caption as text (C)"
+                aria-keyshortcuts=keymap::aria(KeyAction::CopyCaption)
+                title=keymap::titled("Copy the caption as text", KeyAction::CopyCaption)
                 disabled=disabled
                 on:click=move |_| exporter.run(Action::CopyCaption)
             >
@@ -487,7 +451,7 @@ fn exception_name(e: &JsValue) -> String {
 
 /// `true` if the page has a non-empty text selection (a `Range`, not a
 /// caret), so `⌘C` should copy the text instead.
-fn page_text_selected() -> bool {
+pub(crate) fn page_text_selected() -> bool {
     window()
         .get_selection()
         .ok()
