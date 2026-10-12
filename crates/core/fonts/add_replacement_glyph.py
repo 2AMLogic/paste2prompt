@@ -7,9 +7,23 @@ and this script gives U+FFFD a visible shape: the usual black diamond with
 Inter's own question mark cut out of it. Inter is OFL-1.1 with no Reserved
 Font Name, so a modified subset may keep the name (see `OFL.txt`).
 
-Run after `pyftsubset`, from `crates/core` (needs fontTools):
+Run after `pyftsubset` (the command is in the `INTER_REGULAR` doc comment
+in `src/render/text.rs`), from `crates/core`, with fontTools 4.66.1:
 
-    python3 fonts/add_replacement_glyph.py fonts/Inter-Regular-subset.ttf
+    python3 -m venv /tmp/ft && /tmp/ft/bin/pip install fonttools==4.66.1
+    /tmp/ft/bin/python fonts/add_replacement_glyph.py fonts/Inter-Regular-subset.ttf
+
+Byte-reproducible: the output depends only on the input font and the
+fontTools version. fontTools would otherwise stamp `head.modified` with the
+current time on save, so the font is opened with `recalcTimestamp=False`
+and keeps the input's own `head.modified` (the time `pyftsubset` wrote).
+Nothing else in the output depends on the clock or the environment. To
+check the committed subset, run the script on the pre-glyph subset and
+compare:
+
+    git show 9b57496^:crates/core/fonts/Inter-Regular-subset.ttf > /tmp/pre.ttf
+    /tmp/ft/bin/python fonts/add_replacement_glyph.py /tmp/pre.ttf
+    cmp /tmp/pre.ttf fonts/Inter-Regular-subset.ttf
 
 Idempotent: a font that already maps U+FFFD is left unchanged.
 """
@@ -25,7 +39,9 @@ NAME = "uniFFFD"
 
 
 def main(path: str) -> None:
-    font = TTFont(path)
+    # Keep the input's head.modified rather than the current time, so the
+    # output is byte-identical across runs.
+    font = TTFont(path, recalcTimestamp=False)
     cmap = font.getBestCmap()
     if 0xFFFD in cmap:
         print(f"{path}: U+FFFD already mapped to {cmap[0xFFFD]}")
