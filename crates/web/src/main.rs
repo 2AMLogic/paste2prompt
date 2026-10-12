@@ -86,12 +86,17 @@ fn App() -> impl IntoView {
     );
 
     view! {
+        // Two groups so the header can wrap on a phone: the title with Open
+        // and Start over, then the export actions and Shortcuts on their own
+        // row (style.css, "Header").
         <header>
             <h1>{APP_NAME}</h1>
             <OpenButton input />
             <StartOverButton input />
-            <ExportToolbar exporter />
-            <ShortcutsButton />
+            <div class="header-actions">
+                <ExportToolbar exporter />
+                <ShortcutsButton />
+            </div>
         </header>
         <main>
             <Show when=empty fallback=move || view! { <ImageInfo /> }>

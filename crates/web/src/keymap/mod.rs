@@ -331,11 +331,14 @@ pub fn ShortcutsButton() -> impl IntoView {
     view! {
         <button
             type="button"
+            aria-label="Shortcuts"
             aria-keyshortcuts=aria(Action::ShowSheet)
             title=titled("Keyboard shortcuts", Action::ShowSheet)
             on:click=move |_| sheet.toggle()
         >
-            "Shortcuts"
+            // On a phone the header shows the key itself (style.css, "Header").
+            <span class="label-full">"Shortcuts"</span>
+            <span class="label-short">"?"</span>
         </button>
     }
 }

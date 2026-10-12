@@ -301,15 +301,67 @@ h1 {
   box-shadow: 0 0 0 2px Canvas, 0 0 0 4px CanvasText;
 }
 
+/* Header: the title with Open and Start over, then .header-actions (the
+   export toolbar and Shortcuts). Everything wraps, so the header never
+   scrolls the page sideways (#71); on a phone the actions take a row of
+   their own, with short labels and 44px touch targets (below). */
 header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem 1rem;
   margin-bottom: 1rem;
 }
 
 header h1 {
   margin: 0;
+}
+
+header button {
+  white-space: nowrap;
+}
+
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+/* A header button's full label, or the short one narrow screens show
+   instead. The button's aria-label is always the full name. */
+.label-short {
+  display: none;
+}
+
+@media (max-width: 40rem) {
+  header {
+    gap: 0.5rem;
+  }
+
+  header h1 {
+    flex: 1 1 auto;
+    font-size: 1.1rem;
+  }
+
+  .header-actions {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+
+  header button {
+    min-height: 2.75rem;
+    padding: 0.35rem 0.6rem;
+  }
+
+  header .label-full {
+    display: none;
+  }
+
+  header .label-short {
+    display: inline;
+  }
 }
 
 button {
@@ -376,9 +428,9 @@ button.primary {
 
 .export-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  margin-left: auto;
 }
 
 .export-busy {
