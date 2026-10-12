@@ -159,12 +159,27 @@ impl fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
+/// Checks, without any pixels, whether [`render_export`] would accept a
+/// `width × height` image for `doc`: the image is non-empty, at most
+/// [`MAX_IMAGE_PIXELS`] with sides at most [`MAX_EXPORT_SIDE`], matches the
+/// document's size, and the export (the image padded to [`MIN_EXPORT_WIDTH`],
+/// plus `doc`'s caption band) has no side over [`MAX_EXPORT_SIDE`].
+///
+/// Call it before copying an image's pixels out for an export: a rejected
+/// image then costs nothing. It lays out the caption (a few milliseconds),
+/// but allocates nothing image-sized. `render_export` runs the same checks,
+/// so the two can't disagree; the only error it adds is
+/// [`RenderError::PixelBufferSize`], which is about the buffer, not the size.
+pub fn export_size_ok(width: u32, height: u32, doc: &Document) -> Result<(), RenderError> {
+    plan(check_image_size(width, height)?, doc).map(|_| ())
+}
+
 /// Renders the export for `doc` over `image` and returns PNG bytes.
 ///
 /// `image` must be the original image the document's edits were made on
 /// (same size as [`Document::image_size`]). Transparent pixels are composited
 /// over white. Never panics on valid input; see [`RenderError`] for what is
-/// rejected.
+/// rejected, and [`export_size_ok`] to check the size before reading pixels.
 pub fn render_export(image: &RgbaImage, doc: &Document) -> Result<Vec<u8>, RenderError> {
     let pixmap = render_pixmap(image, doc)?;
     encode_png(&pixmap)
@@ -172,25 +187,26 @@ pub fn render_export(image: &RgbaImage, doc: &Document) -> Result<Vec<u8>, Rende
 
 /// Renders the export as an opaque pixmap (premultiplied, alpha 255).
 fn render_pixmap(image: &RgbaImage, doc: &Document) -> Result<Pixmap, RenderError> {
-    let size = validate(image, doc)?;
-    let (iw, ih) = (image.width, image.height);
-    let width = iw.max(MIN_EXPORT_WIDTH);
-
-    let mut text = Text::new();
-    let lines = caption_lines(doc);
-    let mut band = layout_band(&mut text, &lines, width as f32);
-    let band_h = band.height.ceil() as u32;
-
-    let height = u64::from(ih) + u64::from(band_h);
-    if height > u64::from(MAX_EXPORT_SIDE) || width > MAX_EXPORT_SIDE {
-        return Err(RenderError::TooLarge {
-            size: (u64::from(width), height),
+    let size = check_image_size(image.width, image.height)?;
+    let expected = u64::from(image.width) * u64::from(image.height) * 4;
+    if image.pixels.len() as u64 != expected {
+        return Err(RenderError::PixelBufferSize {
+            expected,
+            actual: image.pixels.len(),
         });
     }
-    let height = height as u32;
-    let mut pixmap = Pixmap::new(width, height).ok_or(RenderError::TooLarge {
+    let Plan {
+        width,
+        height,
+        mut text,
+        mut band,
+    } = plan(size, doc)?;
+    let (iw, ih) = (image.width, image.height);
+    let band_h = height - ih;
+    let too_large = || RenderError::TooLarge {
         size: (u64::from(width), u64::from(height)),
-    })?;
+    };
+    let mut pixmap = Pixmap::new(width, height).ok_or_else(too_large)?;
 
     // Image area: padding, then the image centered on it.
     let ox = (width - iw) / 2;
@@ -198,9 +214,7 @@ fn render_pixmap(image: &RgbaImage, doc: &Document) -> Result<Pixmap, RenderErro
     blit_over_white(&mut pixmap, image, ox);
 
     // Marks, clipped to the image.
-    let mut clip = Mask::new(width, height).ok_or(RenderError::TooLarge {
-        size: (u64::from(width), u64::from(height)),
-    })?;
+    let mut clip = Mask::new(width, height).ok_or_else(too_large)?;
     if let Some(rect) = tiny_skia::Rect::from_xywh(ox as f32, 0.0, iw as f32, ih as f32) {
         clip.fill_path(
             &PathBuilder::from_rect(rect),
@@ -230,29 +244,59 @@ fn render_pixmap(image: &RgbaImage, doc: &Document) -> Result<Pixmap, RenderErro
     Ok(pixmap)
 }
 
-fn validate(image: &RgbaImage, doc: &Document) -> Result<ImageSize, RenderError> {
-    let size = ImageSize::new(image.width, image.height).map_err(|_| RenderError::EmptyImage)?;
-    let pixels = u64::from(image.width) * u64::from(image.height);
-    if pixels > MAX_IMAGE_PIXELS || image.width > MAX_EXPORT_SIDE || image.height > MAX_EXPORT_SIDE
-    {
+/// The image-only limits: non-empty, at most [`MAX_IMAGE_PIXELS`], and no
+/// side over [`MAX_EXPORT_SIDE`]. Checked first, before any layout.
+fn check_image_size(width: u32, height: u32) -> Result<ImageSize, RenderError> {
+    let size = ImageSize::new(width, height).map_err(|_| RenderError::EmptyImage)?;
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_IMAGE_PIXELS || width > MAX_EXPORT_SIDE || height > MAX_EXPORT_SIDE {
         return Err(RenderError::TooLarge {
-            size: (u64::from(image.width), u64::from(image.height)),
-        });
-    }
-    let expected = pixels * 4;
-    if image.pixels.len() as u64 != expected {
-        return Err(RenderError::PixelBufferSize {
-            expected,
-            actual: image.pixels.len(),
-        });
-    }
-    if doc.image_size() != size {
-        return Err(RenderError::SizeMismatch {
-            image: (image.width, image.height),
-            document: doc.image_size(),
+            size: (u64::from(width), u64::from(height)),
         });
     }
     Ok(size)
+}
+
+/// The export's size and its laid-out caption band, before any drawing.
+struct Plan {
+    /// Export width: the image's, or [`MIN_EXPORT_WIDTH`] if that's wider.
+    width: u32,
+    /// Export height: the image's plus the band's.
+    height: u32,
+    text: Text,
+    band: Band,
+}
+
+/// Lays out the export of a `size` image for `doc` and checks the export's
+/// size. Shared by [`export_size_ok`] and the renderer, so the prediction
+/// and the render can't drift apart.
+fn plan(size: ImageSize, doc: &Document) -> Result<Plan, RenderError> {
+    if doc.image_size() != size {
+        return Err(RenderError::SizeMismatch {
+            image: (size.width(), size.height()),
+            document: doc.image_size(),
+        });
+    }
+    let width = size.width().max(MIN_EXPORT_WIDTH);
+    let mut text = Text::new();
+    let band = layout_band(&mut text, &caption_lines(doc), width as f32);
+    let height = u64::from(size.height()) + u64::from(band.height.ceil() as u32);
+    // The pixmap's byte length must also fit in `usize` (4 GiB on wasm32).
+    let bytes = u64::from(width) * height * 4;
+    if height > u64::from(MAX_EXPORT_SIDE)
+        || width > MAX_EXPORT_SIDE
+        || usize::try_from(bytes).is_err()
+    {
+        return Err(RenderError::TooLarge {
+            size: (u64::from(width), height),
+        });
+    }
+    Ok(Plan {
+        width,
+        height: height as u32,
+        text,
+        band,
+    })
 }
 
 /// Fills a rectangle with an opaque color, clipped to the pixmap.
@@ -525,3 +569,6 @@ fn layout_band(text: &mut Text, lines: &[CaptionLine], width: f32) -> Band {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod size_tests;

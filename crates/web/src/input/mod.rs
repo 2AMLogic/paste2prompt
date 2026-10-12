@@ -10,6 +10,7 @@
 pub mod rules;
 
 use leptos::{ev, html, prelude::*, task::spawn_local};
+use paste2prompt_core::{Document, ImageSize, export_size_ok};
 use wasm_bindgen::JsCast;
 use web_sys::{
     Blob, ClipboardEvent, DataTransfer, DragEvent, Event, EventTarget, File, FileList, HtmlElement,
@@ -25,6 +26,8 @@ const MSG_PASTE_NO_IMAGE: &str =
     "The clipboard has no image. Copy an image or take a screenshot, then paste.";
 const MSG_FILE_NOT_IMAGE: &str = "That file isn't an image.";
 const MSG_DROP_NO_FILE: &str = "Drop an image file. Links and text can't be loaded.";
+const MSG_TOO_LARGE_TO_EXPORT: &str =
+    "This image is too large to export as a PNG. You can still mark it up and copy the caption.";
 
 /// Controller shared by every input path. Cheap to copy into event handlers.
 #[derive(Clone, Copy)]
@@ -86,8 +89,10 @@ impl ImageInput {
             }
             match result {
                 Ok(img) => {
+                    let notice =
+                        (!exportable(img.width(), img.height())).then_some(MSG_TOO_LARGE_TO_EXPORT);
                     this.store.set(img);
-                    this.notice.set(None);
+                    this.notice.set(notice);
                 }
                 Err(err) => this.notice.set(Some(err.message())),
             }
@@ -267,6 +272,14 @@ pub fn OpenButton(input: ImageInput, #[prop(optional)] class: &'static str) -> i
             "Open…"
         </button>
     }
+}
+
+/// `true` if an export of a `width × height` image with no edits yet would
+/// render. Only a warning at load; the export re-checks with the real
+/// document.
+fn exportable(width: u32, height: u32) -> bool {
+    ImageSize::new(width, height)
+        .is_ok_and(|size| export_size_ok(width, height, &Document::new(size)).is_ok())
 }
 
 fn confirm(message: &str) -> bool {
