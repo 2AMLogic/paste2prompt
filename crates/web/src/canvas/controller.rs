@@ -812,11 +812,11 @@ impl Controller {
         self.editor().is_some_and(Editor::can_redo)
     }
 
-    /// Undoes one step. During a drag it only cancels (reverts) the drag
-    /// and undoes no earlier step, matching [`Editor::undo`] during a
-    /// gesture.
+    /// Undoes one step. During a drag (on the canvas, or a history-panel
+    /// reorder) it only cancels (reverts) the drag and undoes no earlier
+    /// step, matching [`Editor::undo`] during a gesture.
     pub fn undo(&mut self) -> bool {
-        if self.cancel_drag() {
+        if self.cancel_in_progress() {
             self.revalidate_selection();
             return true;
         }
@@ -825,17 +825,34 @@ impl Controller {
         done
     }
 
-    /// Redoes one step. During a drag it only cancels (reverts) the drag
-    /// and redoes nothing, like [`Self::undo`]: one key press never both
-    /// throws away the drag and changes history.
+    /// Redoes one step. During a drag (on the canvas, or a history-panel
+    /// reorder) it only cancels (reverts) the drag and redoes nothing, like
+    /// [`Self::undo`]: one key press never both throws away the drag and
+    /// changes history. ([`Editor::redo`] alone would instead commit an open
+    /// reorder gesture, clearing the redo stack.)
     pub fn redo(&mut self) -> bool {
-        if self.cancel_drag() {
+        if self.cancel_in_progress() {
             self.revalidate_selection();
             return true;
         }
         let done = self.session.as_mut().is_some_and(|s| s.editor.redo());
         self.revalidate_selection();
         done
+    }
+
+    /// Cancels a canvas drag or an open history-panel reorder gesture.
+    /// Returns whether either was in progress.
+    fn cancel_in_progress(&mut self) -> bool {
+        if self.cancel_drag() {
+            return true;
+        }
+        match &mut self.session {
+            Some(s) if s.editor.in_gesture() => {
+                s.editor.cancel_gesture();
+                true
+            }
+            _ => false,
+        }
     }
 
     fn revalidate_selection(&mut self) {
@@ -864,6 +881,96 @@ impl Controller {
     /// Whether a pointer drag is in progress.
     pub fn dragging(&self) -> bool {
         self.session.as_ref().is_some_and(|s| s.drag.is_some())
+    }
+}
+
+/// History panel (#11): delete and reorder edits by id, a drag-reorder as
+/// one gesture, and the image-level instructions.
+impl Controller {
+    /// Deletes the edit `id` (one undo step), clearing the selection if it
+    /// was selected. Returns whether anything was deleted.
+    pub fn delete_edit(&mut self, id: EditId) -> bool {
+        self.cancel_drag();
+        let Some(s) = &mut self.session else {
+            return false;
+        };
+        if s.selected == Some(id) {
+            s.selected = None;
+        }
+        s.editor.delete_edit(id).is_ok()
+    }
+
+    /// Moves the edit `id` to `index` in the list (one undo step), e.g. for
+    /// the up and down buttons.
+    pub fn move_edit(&mut self, id: EditId, index: usize) -> Result<(), EditError> {
+        self.cancel_drag();
+        let Some(s) = &mut self.session else {
+            return Ok(());
+        };
+        s.editor.break_coalescing();
+        s.editor.move_edit(id, index)
+    }
+
+    /// Starts a drag-reorder: every [`Self::reorder_to`] until
+    /// [`Self::end_reorder`] is one undo step. Returns whether it started.
+    pub fn begin_reorder(&mut self) -> bool {
+        self.cancel_drag();
+        let Some(s) = &mut self.session else {
+            return false;
+        };
+        s.editor.begin_gesture();
+        true
+    }
+
+    /// Moves `id` to `index` during a drag-reorder. Ignored once the
+    /// reorder's gesture is gone (an undo mid-drag cancels it), so later
+    /// moves of the same drag never land as separate undo steps.
+    pub fn reorder_to(&mut self, id: EditId, index: usize) -> Result<(), EditError> {
+        match &mut self.session {
+            Some(s) if s.drag.is_none() && s.editor.in_gesture() => s.editor.move_edit(id, index),
+            _ => Ok(()),
+        }
+    }
+
+    /// Ends a drag-reorder, recording it as one undo step if the order
+    /// changed.
+    pub fn end_reorder(&mut self) {
+        if let Some(s) = &mut self.session
+            && s.drag.is_none()
+        {
+            s.editor.end_gesture();
+        }
+    }
+
+    /// Abandons a drag-reorder (`pointercancel`), restoring the order it
+    /// started from.
+    pub fn cancel_reorder(&mut self) {
+        if let Some(s) = &mut self.session
+            && s.drag.is_none()
+        {
+            s.editor.cancel_gesture();
+        }
+    }
+
+    /// The image-level instructions, or `""` with no image.
+    pub fn instructions(&self) -> &str {
+        self.editor().map_or("", |e| e.document().instructions())
+    }
+
+    /// Replaces the image-level instructions. Consecutive calls coalesce
+    /// into one undo step until [`Self::end_instructions_edit`].
+    pub fn set_instructions(&mut self, text: &str) {
+        if let Some(s) = &mut self.session {
+            s.editor.set_instructions(text);
+        }
+    }
+
+    /// Call when the instructions box gains or loses focus, so one typing
+    /// session is one undo step of its own.
+    pub fn end_instructions_edit(&mut self) {
+        if let Some(s) = &mut self.session {
+            s.editor.break_coalescing();
+        }
     }
 }
 

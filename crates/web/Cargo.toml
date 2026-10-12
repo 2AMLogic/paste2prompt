@@ -35,6 +35,7 @@ features = [
     "FileList",
     "HtmlAnchorElement",
     "HtmlCanvasElement",
+    "HtmlCollection",
     "HtmlElement",
     "HtmlInputElement",
     "ImageBitmap",
