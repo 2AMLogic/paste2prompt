@@ -2,24 +2,32 @@
 //! being drawn. It follows the export's mark vocabulary (outline, numbered
 //! badge, dashed ghost, translate arrow, mirror-axis glyph) but is not the
 //! export: the core renders that (spec §Architecture).
+//!
+//! Each edit's outline, badge, ghost, arrow and mirror glyph use the export's
+//! color for its badge number ([`mark_css`]). Selection is a neutral
+//! ring ([`SELECTION_RING`]) outside the white halo, so it never
+//! depends on the edit's color.
 
 use paste2prompt_core::{ImageSize, MirrorAxis, Op, badge_positions};
 use wasm_bindgen::JsValue;
 use web_sys::CanvasRenderingContext2d;
 
+use super::colors::{SELECTION_RING, mark_css};
 use super::controller::{Controller, Handle, Preview};
 use super::geom::Px;
 use super::source::SourceImage;
 use super::view::ViewTransform;
 
-const MARK: &str = "#ff2d55";
 const HALO: &str = "rgba(255, 255, 255, 0.95)";
-const GHOST: &str = "#0a84ff";
-const SELECTED: &str = "#ffcc00";
+/// Resize and rotate handles: UI chrome, not an edit, so not a palette color.
+const HANDLE: &str = "#0a84ff";
 const PREVIEW: &str = "#ff2d55";
 const BADGE_RADIUS: f64 = 11.0;
 /// Width of the badge's white ring, half of it outside `BADGE_RADIUS`.
 const BADGE_RING: f64 = 2.0;
+/// The selected badge's extra rings: white, then [`SELECTION_RING`].
+const SELECTED_BADGE_GAP: f64 = 2.5;
+const SELECTED_BADGE_RING: f64 = 2.5;
 const HANDLE_SIZE: f64 = 9.0;
 
 /// Draws one frame. `ctx` is already scaled so one unit is one CSS pixel.
@@ -51,19 +59,20 @@ pub fn draw(
     ctx.set_line_join("round");
 
     // Ghosts first, so source outlines and badges stay on top.
-    for edit in doc.edits() {
+    for (i, edit) in doc.edits().iter().enumerate() {
         let Some(ghost) = edit.ghost(size) else {
             continue;
         };
+        let color = mark_css(i + 1);
         let pts = screen_points(view, &ghost.outline_pixels(size));
         dashed(ctx, &[6.0, 4.0])?;
         stroke_path(ctx, &pts, HALO, 4.0);
-        stroke_path(ctx, &pts, GHOST, 2.0);
+        stroke_path(ctx, &pts, &color, 2.0);
         dashed(ctx, &[])?;
         if let Op::Translate { .. } = edit.op() {
             let from = view.to_screen(size.to_pixels(edit.region().center()));
             let to = view.to_screen(size.to_pixels(ghost.center()));
-            arrow(ctx, from, to);
+            arrow(ctx, from, to, &color);
         }
     }
 
@@ -77,17 +86,26 @@ pub fn draw(
     for (i, (edit, placed)) in doc.edits().iter().zip(&badges).enumerate() {
         let pts = screen_points(view, &edit.region().outline_pixels(size));
         let is_selected = selected == Some(edit.id());
-        stroke_path(ctx, &pts, HALO, if is_selected { 6.0 } else { 4.0 });
-        stroke_path(
-            ctx,
-            &pts,
-            if is_selected { SELECTED } else { MARK },
-            if is_selected { 3.0 } else { 2.0 },
-        );
-        if let Op::Mirror { axis } = edit.op() {
-            mirror_glyph(ctx, view, size, edit.region(), *axis)?;
+        let number = i + 1;
+        let color = mark_css(number);
+        if is_selected {
+            stroke_path(ctx, &pts, SELECTION_RING, 9.0);
+            stroke_path(ctx, &pts, HALO, 6.0);
+            stroke_path(ctx, &pts, &color, 3.0);
+        } else {
+            stroke_path(ctx, &pts, HALO, 4.0);
+            stroke_path(ctx, &pts, &color, 2.0);
         }
-        badge(ctx, view.to_screen(placed.center), i + 1, is_selected)?;
+        if let Op::Mirror { axis } = edit.op() {
+            mirror_glyph(ctx, view, size, edit.region(), *axis, &color)?;
+        }
+        badge(
+            ctx,
+            view.to_screen(placed.center),
+            number,
+            &color,
+            is_selected,
+        )?;
     }
 
     if let Some(edit) = ctrl.selected_edit() {
@@ -98,7 +116,7 @@ pub fn draw(
                     let s = HANDLE_SIZE;
                     ctx.set_fill_style_str("#fff");
                     ctx.fill_rect(p.0 - s / 2.0, p.1 - s / 2.0, s, s);
-                    ctx.set_stroke_style_str(GHOST);
+                    ctx.set_stroke_style_str(HANDLE);
                     ctx.set_line_width(1.5);
                     ctx.stroke_rect(p.0 - s / 2.0, p.1 - s / 2.0, s, s);
                 }
@@ -109,7 +127,7 @@ pub fn draw(
                     };
                     let a = view.to_screen(size.to_pixels(anchor));
                     dashed(ctx, &[3.0, 3.0])?;
-                    stroke_path_open(ctx, &[a, p], GHOST, 1.0);
+                    stroke_path_open(ctx, &[a, p], HANDLE, 1.0);
                     dashed(ctx, &[])?;
                     ctx.begin_path();
                     ctx.arc(
@@ -121,7 +139,7 @@ pub fn draw(
                     )?;
                     ctx.set_fill_style_str("#fff");
                     ctx.fill();
-                    ctx.set_stroke_style_str(GHOST);
+                    ctx.set_stroke_style_str(HANDLE);
                     ctx.set_line_width(1.5);
                     ctx.stroke();
                 }
@@ -185,7 +203,7 @@ fn stroke_path_open(ctx: &CanvasRenderingContext2d, pts: &[Px], color: &str, wid
     ctx.stroke();
 }
 
-fn arrow(ctx: &CanvasRenderingContext2d, from: Px, to: Px) {
+fn arrow(ctx: &CanvasRenderingContext2d, from: Px, to: Px, color: &str) {
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     let len = dx.hypot(dy);
     if len < 4.0 {
@@ -199,7 +217,7 @@ fn arrow(ctx: &CanvasRenderingContext2d, from: Px, to: Px) {
             to.1 - uy * head + ux * head * 0.5 * s,
         )
     };
-    for (color, width) in [(HALO, 4.0), (GHOST, 2.0)] {
+    for (color, width) in [(HALO, 4.0), (color, 2.0)] {
         stroke_path_open(ctx, &[from, to], color, width);
         stroke_path_open(ctx, &[wing(1.0), to, wing(-1.0)], color, width);
     }
@@ -211,6 +229,7 @@ fn mirror_glyph(
     size: ImageSize,
     region: &paste2prompt_core::Region,
     axis: MirrorAxis,
+    color: &str,
 ) -> Result<(), JsValue> {
     let b = region.bounds();
     let min = view.to_screen(size.to_pixels(b.min()));
@@ -230,10 +249,10 @@ fn mirror_glyph(
     };
     dashed(ctx, &[5.0, 3.0])?;
     stroke_path_open(ctx, &line, HALO, 4.0);
-    stroke_path_open(ctx, &line, GHOST, 2.0);
+    stroke_path_open(ctx, &line, color, 2.0);
     dashed(ctx, &[])?;
-    arrow(ctx, c, flip[0]);
-    arrow(ctx, c, flip[1]);
+    arrow(ctx, c, flip[0], color);
+    arrow(ctx, c, flip[1], color);
     Ok(())
 }
 
@@ -241,16 +260,30 @@ fn badge(
     ctx: &CanvasRenderingContext2d,
     at: Px,
     number: usize,
+    color: &str,
     selected: bool,
 ) -> Result<(), JsValue> {
+    if selected {
+        // A neutral ring outside a white gap, outside the badge's own ring.
+        let r = BADGE_RADIUS + BADGE_RING / 2.0;
+        for (radius, fill) in [
+            (r + SELECTED_BADGE_GAP + SELECTED_BADGE_RING, SELECTION_RING),
+            (r + SELECTED_BADGE_GAP, "#fff"),
+        ] {
+            ctx.begin_path();
+            ctx.arc(at.0, at.1, radius, 0.0, std::f64::consts::TAU)?;
+            ctx.set_fill_style_str(fill);
+            ctx.fill();
+        }
+    }
     ctx.begin_path();
     ctx.arc(at.0, at.1, BADGE_RADIUS, 0.0, std::f64::consts::TAU)?;
-    ctx.set_fill_style_str(if selected { SELECTED } else { MARK });
+    ctx.set_fill_style_str(color);
     ctx.fill();
     ctx.set_stroke_style_str("#fff");
     ctx.set_line_width(BADGE_RING);
     ctx.stroke();
-    ctx.set_fill_style_str(if selected { "#000" } else { "#fff" });
+    ctx.set_fill_style_str("#fff");
     ctx.set_font("bold 12px system-ui, sans-serif");
     ctx.set_text_align("center");
     ctx.set_text_baseline("middle");

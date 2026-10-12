@@ -173,8 +173,10 @@ h1 {
   background: Canvas;
 }
 
+/* Selection is a neutral ring, never a palette color (canvas/colors.rs). */
 .history-row.selected {
-  border-color: #ffcc00;
+  border-color: CanvasText;
+  box-shadow: inset 0 0 0 1px CanvasText;
 }
 
 .history-row.dragging {
@@ -229,7 +231,8 @@ h1 {
   padding: 0.2rem 0.5rem;
 }
 
-/* The same colors as the canvas badges (canvas/render.rs: MARK, SELECTED). */
+/* Each edit's badge takes its color from a .mark-N class below, never an
+   inline style (the CSP is style-src 'self'). */
 .badge {
   flex: none;
   display: inline-flex;
@@ -238,16 +241,27 @@ h1 {
   min-width: 1.4rem;
   height: 1.4rem;
   border-radius: 999px;
-  background: #ff2d55;
+  background: #de1923;
   color: #fff;
   font-size: 0.8rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 
+/* Edit colors: one class per entry of core's PALETTE (mark_color), in order,
+   matching the canvas and the export. Copy any palette change here by hand;
+   the tests in canvas/colors.rs fail until these match it. */
+.badge.mark-1 { background: #de1923; }
+.badge.mark-2 { background: #005ae1; }
+.badge.mark-3 { background: #c4009e; }
+.badge.mark-4 { background: #c85200; }
+.badge.mark-5 { background: #00873e; }
+.badge.mark-6 { background: #7030c8; }
+.badge.mark-7 { background: #007a8a; }
+
+/* The selected row's badge keeps its color and gains a neutral ring. */
 .history-row.selected .badge {
-  background: #ffcc00;
-  color: #000;
+  box-shadow: 0 0 0 2px Canvas, 0 0 0 4px CanvasText;
 }
 
 header {
