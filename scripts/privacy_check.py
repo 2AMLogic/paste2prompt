@@ -5,19 +5,24 @@ CLAUDE.md rule 1: no network calls with user content. The only request the
 page may make is loading its own static assets (the .js glue and the .wasm,
 from the same origin). This script checks that, in six places:
 
-1. All JS in dist/ (every *.js and *.mjs, recursively, including the
-   dist/snippets/ that `#[wasm_bindgen(module = ...)]` and `inline_js` produce).
-   Every call that reaches the network from wasm has to go through JS, so a
-   surviving web-sys `fetch`/`XmlHttpRequest`/... binding, or a snippet that
-   calls one directly, shows up here. The only allowed hits are wasm-bindgen's
-   own .wasm loader, matched as exact source lines in the top-level glue only
-   (see LOADER_ALLOWLIST). dist/ may contain only known file types, so a new
-   output shape fails closed instead of going unscanned.
-2. dist/*.html: inline scripts (trunk's loader) use no network API, and no
-   URL attribute (src, href, srcset, poster, action, ...) names another
-   origin. dist/**/*.css: no url() or @import names another origin.
-3. The wasm import section of dist/*.wasm. Import names must not name a
-   network or navigation API, and every import must come from the
+Every file in dist/ is walked once and dispatched on its lowercased suffix,
+so `x.JS` is scanned exactly like `x.js`. A file type the guard does not know
+fails closed instead of going unscanned.
+
+1. All JS in dist/ (every .js and .mjs, any case, at any depth, including the
+   dist/snippets/ that `#[wasm_bindgen(module = ...)]` and `inline_js`
+   produce). Every call that reaches the network from wasm has to go through
+   JS, so a surviving web-sys `fetch`/`XmlHttpRequest`/... binding, or a
+   snippet that calls one directly, shows up here. The only allowed hits are
+   wasm-bindgen's own .wasm loader, matched as exact source lines and only in
+   the one glue file that index.html's inline loader imports (see
+   LOADER_ALLOWLIST). Any other JS file gets no allowance.
+2. HTML: only top-level .html is allowed. Inline scripts (trunk's loader) use
+   no network API, no URL attribute (src, href, srcset, poster, action, ...)
+   names another origin, and there is no `<meta http-equiv="refresh">`. CSS
+   (any depth): no url() or @import names another origin.
+3. The import section of every .wasm in dist/ (any depth). Import names must
+   not name a network or navigation API, and every import must come from the
    wasm-bindgen glue (whose shims check 1 has already scanned).
 4. The Rust sources and manifest of crates/web: no `#[server]`, `server_fn`,
    `gloo-net`, `reqwest`, or web-sys network types, and no network API in the
@@ -28,28 +33,47 @@ from the same origin). This script checks that, in six places:
    catching them in source gives a clearer message and covers code the
    linker happened to drop. At least one .rs file must exist, so a wrong
    --web-crate path fails instead of passing on nothing.
-5. Every *.js / *.mjs under crates/web (sources for `#[wasm_bindgen(module)]`),
+5. Every .js / .mjs under crates/web (sources for `#[wasm_bindgen(module)]`),
    plus any file a `module = "..."` attribute points to: no network API.
-6. dist/_headers (written by scripts/write_headers.py): exactly one CSP,
-   directive names matched case-insensitively, no directive repeated (browsers
-   enforce the first copy and ignore the rest), and every directive checked
-   against its own source allowlist (CSP_ALLOWED). Nothing allows another
-   origin, a scheme source other than blob:/data: in img-src, '*',
-   'unsafe-inline' or 'unsafe-eval'.
+6. dist/_headers must be exactly scripts/write_headers.py's HEADERS_TEMPLATE
+   with the sha256 hash of each inline script in dist/index.html filled in,
+   compared byte for byte after normalizing line endings. write_headers.py is
+   the only producer of the file, so there is nothing to interpret: another
+   path block, a `!` header-removal line, a Report-Only policy, a dropped or
+   repeated directive, or any other edit is a finding. The template itself is
+   also checked here (csp_problems), so weakening it in write_headers.py
+   fails too: default-src, base-uri, form-action and frame-ancestors are
+   'none', connect-src is 'self', every directive has its own source
+   allowlist (CSP_ALLOWED), and there is no reporting directive.
 
-Navigation (`window.open`, `location = ...`, `location.href = ...`,
-`location.assign`, `location.replace`) can also carry data off the page, and
-CSP has no working navigation directive, so checks 1-5 treat it like a
-network API.
+Navigation (`open(`, `location = ...`, `location.href|host|hostname|... =`,
+`location[...]`, `location.assign`, `location.replace`) can also carry data
+off the page, and CSP has no working navigation directive, so checks 1-5
+treat it like a network API.
 
 Threat model: this is a static scan for accidental or ordinary network code,
 such as a web-sys binding, a helper crate's snippet, or a copied analytics
-call. It does not try to catch deliberate obfuscation, for example
-`Reflect.get(globalThis, "fe" + "tch")` behind a generic shim; no static scan
-can. For that the CSP is the backstop: `connect-src 'self'` blocks requests to
-any other origin, and eval / `new Function` are blocked because
-'unsafe-eval' is never allowed (only 'wasm-unsafe-eval'). Scripts that
-Cloudflare injects at the edge are zone settings (see wrangler.jsonc).
+call. Known gaps, accepted on purpose:
+
+- Deliberate obfuscation, for example `Reflect.get(globalThis, "fe" + "tch")`
+  behind a generic shim, or a computed property name. No static scan can
+  catch it.
+- An anchor's `href` plus `click()` (`a.href = "https://..."; a.click()`).
+  This stays allowed because downloading an exported image needs
+  `<a download href=blob:...>` (#12); web-sys `set_href`, `click`,
+  `set_download` and `create_object_url` are not banned.
+- DNS prefetch, e.g. a JS-created `<link rel="dns-prefetch"
+  href="//<data>.example">`. It is a DNS-only leak that CSP does not reliably
+  block.
+
+The backstops for all three are the CSP limits checked in (6):
+`connect-src 'self'` blocks fetch/XHR/WebSocket/beacons to any other origin,
+`form-action 'none'` blocks form posts, `base-uri 'none'` and
+`default-src 'none'` stop any other load, and eval / `new Function` are
+blocked because 'unsafe-eval' is never allowed (only 'wasm-unsafe-eval').
+Top-level navigation is not covered by CSP (there is no shipping
+`navigate-to`), which is why navigation is scanned for in (1)-(5). Scripts
+that Cloudflare injects at the edge are zone settings (see wrangler.jsonc).
 
 Usage: python3 scripts/privacy_check.py [--dist DIR] [--web-crate DIR]
 Exit 0 on pass, 1 on any finding. Tests: scripts/test_privacy_check.py.
@@ -58,13 +82,15 @@ Exit 0 on pass, 1 on any finding. Tests: scripts/test_privacy_check.py.
 from __future__ import annotations
 
 import argparse
-import base64
-import hashlib
+import difflib
 import os
 import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import write_headers  # noqa: E402  (the canonical _headers template)
 
 # Browser APIs that send a request, or navigate away with data in the URL.
 # Network APIs are matched by their bare names so aliasing (`const f = fetch`)
@@ -73,13 +99,16 @@ NETWORK_JS = re.compile(
     r"\b(fetch|XMLHttpRequest|WebSocket|sendBeacon|EventSource|WebTransport|"
     r"RTCPeerConnection|importScripts)\b"
     r"|\b(window|self|globalThis|top|parent|opener)\s*\.\s*open\s*\("
-    r"|\blocation\s*(\.\s*href\s*)?=(?!=)"
+    r"|(?<![.\w$])open\s*\("
+    r"|\blocation\s*(\.\s*(href|host|hostname|protocol|port|pathname|search)\s*)?=(?!=)"
+    r"|\blocation\s*\["
     r"|\blocation\s*\.\s*(assign|replace)\b"
 )
 
 # wasm-bindgen's loader for the app's own .wasm. Matched as whole stripped
-# lines, each at most once, and only in the top-level glue (dist/*.js), so a
-# copy elsewhere, including in a snippet, is still a finding. If a
+# lines, each at most once, and only in the one glue file that index.html's
+# inline loader imports, so a copy anywhere else (a second top-level .js, a
+# snippet) is still a finding. If a
 # wasm-bindgen upgrade reformats these, the guard fails closed: review the
 # new loader and update the lines here.
 LOADER_ALLOWLIST = (
@@ -100,6 +129,9 @@ NETWORK_WASM_IMPORT = re.compile(
 # wasm-bindgen's glue module, the only place imports may come from: "wbg" or,
 # in current versions, "./<crate>_bg.js".
 WBG_MODULE = re.compile(r"^(wbg|\./[A-Za-z0-9_-]+_bg\.js)$")
+
+# `import ... from '/<crate>-<hash>.js'` in trunk's inline loader: names the glue.
+LOADER_IMPORT = re.compile(r"""\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]""")
 
 # Rust-side ways to add a network call or a navigation.
 NETWORK_RUST = re.compile(
@@ -125,12 +157,17 @@ MODULE_ATTR = re.compile(r"\bmodule\s*=\s*\"([^\"]+)\"")
 
 # File types trunk produces today (plus static asset types the app may add).
 # Anything else in dist/ fails closed until this guard is taught to read it.
-DIST_SUFFIXES = {".html", ".js", ".mjs", ".wasm", ".css", ".png", ".ico", ".jpg", ".webp", ".woff2"}
+# Suffixes are compared lowercased. Only the scanned types plus inert images
+# and fonts; no .svg (it can carry script) and no .htm.
+JS_SUFFIXES = {".js", ".mjs"}
+INERT_SUFFIXES = {".png", ".ico", ".jpg", ".webp", ".woff2"}
 DIST_NAMES = {"_headers"}
 
-# Per-directive CSP source allowlists (lowercased keywords; hash bodies are
-# base64 and kept as written). A directive not listed here may only be
-# 'self' or 'none'. Reporting directives send requests, so they are banned.
+# Properties of write_headers.py's CSP template (check 6 runs csp_problems on
+# it). Per-directive source allowlists: lowercased keywords; hash bodies are
+# base64 and kept as written. A directive not listed may only be 'self' or
+# 'none'. Reporting directives send requests, so they are banned. The
+# REQUIRED directives have no fallback to default-src (or are the fallback).
 _HASH = r"'sha(256|384|512)-[A-Za-z0-9+/]+={0,2}'"
 CSP_ALLOWED = {
     "default-src": re.compile(r"^'none'$", re.IGNORECASE),
@@ -140,6 +177,13 @@ CSP_ALLOWED = {
 }
 CSP_DEFAULT_ALLOWED = re.compile(r"^('self'|'none')$", re.IGNORECASE)
 CSP_BANNED_DIRECTIVES = {"report-uri", "report-to"}
+CSP_REQUIRED = {
+    "default-src": ["'none'"],
+    "connect-src": ["'self'"],
+    "base-uri": ["'none'"],
+    "form-action": ["'none'"],
+    "frame-ancestors": ["'none'"],
+}
 
 # A URL that leaves the page: protocol-relative, or any scheme except the
 # page-local blob: and data:. Leading whitespace is ignored, as browsers do.
@@ -179,6 +223,10 @@ class InlineScripts(HTMLParser):
                     if EXTERNAL_URL.match(url):
                         self.external.append(f"<{tag} {key}={value!r}>")
                         break
+        if tag == "meta" and any(
+            k == "http-equiv" and (v or "").strip().lower() == "refresh" for k, v in attrs
+        ):
+            self.external.append(f"<meta http-equiv='refresh'> navigates away: {attrs!r}")
         if tag == "script" and not any(k == "src" for k, _ in attrs):
             self._buf = []
 
@@ -215,7 +263,10 @@ def check_html(path: Path, f: Findings) -> list[str]:
     decoded.feed(text)
     decoded.close()
     for ref in decoded.external:
-        f.add(str(path), f"reference to another origin: {ref}")
+        if ref.startswith("<meta"):
+            f.add(str(path), ref)
+        else:
+            f.add(str(path), f"reference to another origin: {ref}")
     for script in raw.scripts:
         for m in NETWORK_JS.finditer(script):
             f.add(str(path), f"network or navigation API {m.group(0)!r} in inline script")
@@ -287,7 +338,11 @@ def wasm_imports(data: bytes) -> list[tuple[str, str]]:
 
 
 def check_wasm(path: Path, f: Findings) -> int:
-    imports = wasm_imports(path.read_bytes())
+    try:
+        imports = wasm_imports(path.read_bytes())
+    except (ValueError, IndexError, UnicodeDecodeError) as e:
+        f.add(str(path), f"cannot parse wasm import section ({e}); not scanned")
+        return 0
     for module, name in imports:
         if not WBG_MODULE.match(module):
             f.add(str(path), f"import from unexpected module {module!r}: {name}")
@@ -302,9 +357,14 @@ def _scan_js_text(where: str, text: str, f: Findings, what: str) -> None:
             f.add(f"{where}+{offset}", f"network or navigation API {m.group(0)!r} in {what}")
 
 
+def _files_with_suffix(root: Path, suffixes: set[str]) -> list[Path]:
+    """Files under root whose lowercased suffix is in suffixes (globs are case-sensitive)."""
+    return sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in suffixes)
+
+
 def check_rust(crate: Path, f: Findings) -> list[Path]:
     """Scan crates/web Rust sources; return JS files named by `module = ...`."""
-    sources = sorted((crate / "src").rglob("*.rs"))
+    sources = _files_with_suffix(crate / "src", {".rs"})
     if not sources:
         f.add(str(crate / "src"), "no .rs files; is --web-crate right?")
     modules: list[Path] = []
@@ -338,7 +398,7 @@ def check_rust(crate: Path, f: Findings) -> list[Path]:
 
 
 def check_crate_js(crate: Path, modules: list[Path], f: Findings) -> int:
-    files = {p.resolve() for ext in ("*.js", "*.mjs") for p in crate.rglob(ext)}
+    files = {p.resolve() for p in _files_with_suffix(crate, JS_SUFFIXES)}
     for path in modules:
         if not path.is_file():
             f.add(str(path), "wasm_bindgen module file not found")
@@ -349,52 +409,107 @@ def check_crate_js(crate: Path, modules: list[Path], f: Findings) -> int:
     return len(files)
 
 
-def parse_csp(policy: str, where: str, f: Findings) -> dict[str, list[str]]:
+def parse_csp(policy: str) -> tuple[dict[str, list[str]], list[str]]:
+    """Directives by lowercased name, plus problems found while parsing."""
     directives: dict[str, list[str]] = {}
+    problems = []
     for part in policy.split(";"):
         words = part.split()
         if not words:
             continue
         name = words[0].lower()
         if name in directives:
-            f.add(where, f"CSP directive {name} appears more than once; browsers enforce only the first")
+            problems.append(f"CSP directive {name} appears more than once; browsers enforce only the first")
             continue
         directives[name] = words[1:]
-    return directives
+    return directives, problems
 
 
-def check_headers(dist: Path, inline_scripts: list[str], f: Findings) -> None:
-    path = dist / "_headers"
-    where = str(path)
-    if not path.is_file():
-        f.add(where, "missing; run scripts/write_headers.py after trunk build")
-        return
-    policies = [
-        line.split(":", 1)[1].strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip().lower().startswith("content-security-policy:")
-    ]
-    if len(policies) != 1:
-        f.add(where, f"expected one Content-Security-Policy, found {len(policies)}")
-        return
-    directives = parse_csp(policies[0], where, f)
+def csp_problems(policy: str) -> list[str]:
+    """Why a CSP is not acceptable for this app ([] if it is).
+
+    Check 6 runs this on write_headers.py's template (the hash placeholder
+    replaced by a real-looking hash); the tests run it on weakened policies.
+    """
+    directives, problems = parse_csp(policy)
     for name, sources in directives.items():
         if name in CSP_BANNED_DIRECTIVES:
-            f.add(where, f"CSP {name} sends violation reports over the network")
+            problems.append(f"CSP {name} sends violation reports over the network")
             continue
         allowed = CSP_ALLOWED.get(name, CSP_DEFAULT_ALLOWED)
         for src in sources:
             if not allowed.match(src):
-                f.add(where, f"CSP {name} allows {src}, which is not allowed in {name}")
+                problems.append(f"CSP {name} allows {src}, which is not allowed in {name}")
         if any(s.lower() == "'none'" for s in sources) and len(sources) > 1:
-            f.add(where, f"CSP {name} mixes 'none' with other sources")
-    if [s.lower() for s in directives.get("default-src", [])] != ["'none'"]:
-        f.add(where, "CSP default-src must be exactly 'none'")
-    script = directives.get("script-src", [])
-    for text in inline_scripts:
-        digest = base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode()
-        if f"'sha256-{digest}'" not in script:
-            f.add(where, "CSP script-src lacks the hash of an inline script in index.html")
+            problems.append(f"CSP {name} mixes 'none' with other sources")
+    for name, want in CSP_REQUIRED.items():
+        if [s.lower() for s in directives.get(name, [])] != want:
+            problems.append(f"CSP {name} must be exactly {' '.join(want)}")
+    if not any(re.fullmatch(_HASH, s) for s in directives.get("script-src", [])):
+        problems.append("CSP script-src has no inline-script hash")
+    return problems
+
+
+_PLACEHOLDER_HASH = "'sha256-" + "A" * 43 + "='"
+
+
+def check_headers(dist: Path, f: Findings) -> None:
+    path = dist / "_headers"
+    where = str(path)
+    # The template itself must be a strict policy, so weakening it in
+    # write_headers.py fails here even though dist/_headers would match it.
+    policy = write_headers.template_policy().replace(write_headers.SCRIPT_HASHES, _PLACEHOLDER_HASH)
+    for problem in csp_problems(policy):
+        f.add("scripts/write_headers.py", f"template: {problem}")
+    if not path.is_file():
+        f.add(where, "missing; run scripts/write_headers.py after trunk build")
+        return
+    try:
+        expected = write_headers.expected_headers(dist)
+    except (ValueError, OSError, UnicodeDecodeError) as e:
+        f.add(where, f"cannot compute the expected file: {e}")
+        return
+    try:
+        actual = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as e:
+        f.add(where, f"not UTF-8: {e}")
+        return
+    actual = actual.replace("\r\n", "\n").replace("\r", "\n")
+    if actual == expected:
+        return
+    diff = list(difflib.unified_diff(
+        expected.splitlines(), actual.splitlines(),
+        "expected (scripts/write_headers.py)", where, lineterm="", n=0,
+    ))
+    f.add(where, "differs from scripts/write_headers.py's output; regenerate it, never edit it:")
+    for line in diff[2:22]:
+        f.add(where, f"  {line[:200]}")
+    if len(diff) > 22:
+        f.add(where, f"  ... {len(diff) - 22} more diff lines")
+
+
+def find_glue(dist: Path, inline_scripts: list[str], f: Findings) -> Path | None:
+    """The one top-level .js that index.html's inline loader imports."""
+    specs = set()
+    for script in inline_scripts:
+        for m in LOADER_IMPORT.finditer(script):
+            specs.add(m.group(1) or m.group(2))
+    paths = set()
+    for spec in specs:
+        rel = spec[1:] if spec.startswith("/") else spec[2:] if spec.startswith("./") else None
+        if rel is None or "/" in rel or not rel.lower().endswith(".js"):
+            f.add(f"{dist / 'index.html'}", f"inline loader imports {spec!r}, not a top-level .js")
+            continue
+        paths.add(dist / rel)
+    if len(paths) != 1:
+        f.add(f"{dist / 'index.html'}",
+              f"expected the inline loader to import exactly one glue .js, found {len(paths)}")
+        return None
+    glue = paths.pop()
+    if not glue.is_file():
+        f.add(str(glue), "glue .js imported by index.html not found")
+        return None
+    return glue
 
 
 def main(argv: list[str]) -> int:
@@ -405,31 +520,48 @@ def main(argv: list[str]) -> int:
     dist: Path = args.dist
 
     f = Findings()
-    glue = sorted(dist.glob("*.js"))
-    js = sorted(p for ext in ("*.js", "*.mjs") for p in dist.rglob(ext))
-    html = sorted(dist.glob("*.html"))
-    wasm = sorted(dist.glob("*.wasm"))
-    if not (glue and html and wasm):
-        print(f"privacy_check: {dist} has no .js, .html or .wasm; build first", file=sys.stderr)
+    index = dist / "index.html"
+    if not index.is_file():
+        print(f"privacy_check: {index} not found; build first", file=sys.stderr)
         return 1
 
+    # One walk; every decision is on the lowercased suffix.
+    js, html, css, wasm = [], [], [], []
     for path in sorted(p for p in dist.rglob("*") if p.is_file()):
-        if path.suffix.lower() not in DIST_SUFFIXES and path.name not in DIST_NAMES:
+        suffix = path.suffix.lower()
+        if suffix in JS_SUFFIXES:
+            js.append(path)
+        elif suffix == ".html":
+            if path.parent == dist:
+                html.append(path)
+            else:
+                f.add(str(path), "HTML outside the dist root is not allowed")
+        elif suffix == ".css":
+            css.append(path)
+        elif suffix == ".wasm":
+            wasm.append(path)
+        elif suffix in INERT_SUFFIXES or (path.parent == dist and path.name in DIST_NAMES):
+            pass
+        else:
             f.add(str(path), "file type the privacy guard does not scan; teach it or remove the file")
-    for path in sorted(p for p in dist.rglob("*.html") if p.parent != dist):
-        f.add(str(path), "HTML outside the dist root is not scanned")
+    if not (js and wasm):
+        print(f"privacy_check: {dist} has no .js or .wasm; build first", file=sys.stderr)
+        return 1
 
-    for path in js:
-        check_js(path, f, LOADER_ALLOWLIST if path in glue else ())
-    inline = []
+    inline: list[str] = []
     for path in html:
-        inline += check_html(path, f)
-    for path in sorted(dist.rglob("*.css")):
+        scripts = check_html(path, f)
+        if path == index:
+            inline = scripts
+    glue = find_glue(dist, inline, f)
+    for path in js:
+        check_js(path, f, LOADER_ALLOWLIST if path == glue else ())
+    for path in css:
         check_css(path, f)
     n_imports = sum(check_wasm(path, f) for path in wasm)
     modules = check_rust(args.web_crate, f)
     n_crate_js = check_crate_js(args.web_crate, modules, f)
-    check_headers(dist, inline, f)
+    check_headers(dist, f)
 
     if f.items:
         print("privacy_check: FAILED. The app must not make network requests (CLAUDE.md rule 1).")
@@ -440,7 +572,7 @@ def main(argv: list[str]) -> int:
         return 1
     print(
         f"privacy_check: OK ({len(js)} JS, {len(html)} HTML, {len(wasm)} wasm with "
-        f"{n_imports} imports, crates/web sources and {n_crate_js} crate JS, CSP)"
+        f"{n_imports} imports, crates/web sources and {n_crate_js} crate JS, _headers exact)"
     )
     return 0
 

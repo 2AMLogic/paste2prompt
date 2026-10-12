@@ -5,6 +5,8 @@
 .wrangler/
 node_modules/
 .DS_Store
+# bytecode from importing scripts/*.py in scripts/test_privacy_check.py
+scripts/__pycache__/
 # >>> loom-managed (do not edit) >>>
 # Loom runtime state (don't commit these)
 .loom-in-use

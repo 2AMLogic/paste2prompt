@@ -102,7 +102,7 @@ jobs:
       # Regression tests for scripts/privacy_check.py against fake dist/
       # trees (no build needed), including every bypass found in review.
       - name: test_privacy_check.py
-        run: python3 scripts/test_privacy_check.py
+        run: python3 -B scripts/test_privacy_check.py
 
   licenses:
     name: dependency licenses
