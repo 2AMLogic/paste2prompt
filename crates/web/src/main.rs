@@ -104,11 +104,15 @@ fn App() -> impl IntoView {
             </Show>
             <section class="canvas-panel" hidden=empty>
                 <CanvasToolbar />
+                // One set of children for both arrangements: switching the
+                // class only moves them between grid areas (style.css), so
+                // the instructions textarea is never remounted and keeps its
+                // focus and caret when the layout flips (#73).
                 <div node_ref=canvas.workspace class=move || canvas.arrangement.get().class()>
                     <div class="workspace-main">
                         <CanvasView image />
-                        <InstructionsBox />
                     </div>
+                    <InstructionsBox />
                     <HistoryPanel />
                 </div>
             </section>

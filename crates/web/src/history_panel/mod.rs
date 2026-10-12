@@ -346,13 +346,15 @@ pub fn HistoryPanel() -> impl IntoView {
     }
 }
 
-/// The image-level instructions, under the canvas (spec §The flow, step 4).
+/// The image-level instructions (spec §The flow, step 4): under the canvas,
+/// or above the history panel beside it, by arrangement (#73).
 #[component]
 pub fn InstructionsBox() -> impl IntoView {
-    let ctrl = CanvasState::expect().controller;
+    let state = CanvasState::expect();
+    let ctrl = state.controller;
     let value = move || ctrl.with(|c| c.instructions().to_owned());
     view! {
-        <label class="instructions">
+        <label node_ref=state.instructions class="instructions">
             <span class="instructions-label">"Instructions for the whole image"</span>
             <textarea
                 class="instructions-input"
