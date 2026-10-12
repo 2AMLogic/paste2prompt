@@ -146,6 +146,12 @@ chords:
 | `C` | Copy caption as text (also a button) |
 | `?` | Show the shortcut sheet |
 
+Letters match the character printed on the key, so on AZERTY or Dvorak
+`M` is the key labelled M. When a layout types a non-Latin character
+(Cyrillic, Greek, Hebrew…), the physical key decides instead
+(`KeyboardEvent.code`), so `Ctrl+O` is the key with O printed on it. `?`
+matches the typed character. The sheet shows ⌘ on macOS and Ctrl elsewhere.
+
 ## Architecture
 
 - **Rust core (`crates/core`)**, pure and with no browser dependency:

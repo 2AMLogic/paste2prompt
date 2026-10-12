@@ -1,9 +1,7 @@
-//! Pure decision rules for the export actions: which key press triggers
-//! which action, the download file name, when to show the busy label, and
-//! the user-facing copy-failure messages. No browser types here, so
-//! `cargo test` covers them natively.
-
-pub use crate::input::rules::Mods;
+//! Pure decision rules for the export actions: the download file name, when
+//! to show the busy label, and the user-facing copy-failure messages. No
+//! browser types here, so `cargo test` covers them natively. The keys that
+//! trigger the actions are in [`crate::keymap::rules`].
 
 /// One of the three export actions (spec §Output → Export actions).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,39 +12,6 @@ pub enum Action {
     Download,
     /// Copy the caption as plain text.
     CopyCaption,
-}
-
-/// Where a key press happened, reduced to what the rules need.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct KeyContext {
-    /// Focus is in a text field or `contenteditable` element.
-    pub editable: bool,
-    /// The page has a non-empty text selection.
-    pub text_selected: bool,
-}
-
-/// The export action bound to this key press, if any (spec §Keyboard
-/// shortcuts):
-///
-/// - `⌘C` / `Ctrl+C`: Copy image, only outside text fields and with no page
-///   text selected; otherwise the browser's own copy applies.
-/// - `⌘S` / `Ctrl+S`: Download, everywhere (the browser's "Save page" is
-///   never what the user wants here).
-/// - `C` with no modifier: Copy caption, only outside text fields. Not
-///   `⌘⌥C`, which opens DevTools on macOS.
-pub fn shortcut(key: &str, mods: Mods, ctx: KeyContext) -> Option<Action> {
-    let is = |c: &str| key.eq_ignore_ascii_case(c);
-    let chord = (mods.ctrl || mods.meta) && !mods.shift && !mods.alt;
-    let bare = !(mods.ctrl || mods.meta || mods.shift || mods.alt);
-    if chord && is("s") {
-        Some(Action::Download)
-    } else if chord && is("c") && !ctx.editable && !ctx.text_selected {
-        Some(Action::CopyImage)
-    } else if bare && is("c") && !ctx.editable {
-        Some(Action::CopyCaption)
-    } else {
-        None
-    }
 }
 
 /// Local date and time, as the download file name uses it.
@@ -116,108 +81,6 @@ impl CopyFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const NONE: Mods = Mods {
-        ctrl: false,
-        meta: false,
-        shift: false,
-        alt: false,
-    };
-    const CMD: Mods = Mods { meta: true, ..NONE };
-    const CTRL: Mods = Mods { ctrl: true, ..NONE };
-    const PLAIN: KeyContext = KeyContext {
-        editable: false,
-        text_selected: false,
-    };
-    const IN_FIELD: KeyContext = KeyContext {
-        editable: true,
-        text_selected: false,
-    };
-    const SELECTED: KeyContext = KeyContext {
-        editable: false,
-        text_selected: true,
-    };
-
-    #[test]
-    fn copy_image_chord() {
-        assert_eq!(shortcut("c", CMD, PLAIN), Some(Action::CopyImage));
-        assert_eq!(shortcut("c", CTRL, PLAIN), Some(Action::CopyImage));
-        assert_eq!(shortcut("C", CTRL, PLAIN), Some(Action::CopyImage)); // Caps Lock
-    }
-
-    #[test]
-    fn copy_image_yields_to_text_copy() {
-        // In a text field or with page text selected, ⌘C copies the text.
-        assert_eq!(shortcut("c", CMD, IN_FIELD), None);
-        assert_eq!(shortcut("c", CMD, SELECTED), None);
-        assert_eq!(shortcut("c", CTRL, IN_FIELD), None);
-    }
-
-    #[test]
-    fn reserved_c_chords_are_left_alone() {
-        // ⌘⇧C / Ctrl+Shift+C: inspector. ⌥⌘C / Ctrl+Alt+C: DevTools / AltGr.
-        assert_eq!(shortcut("c", Mods { shift: true, ..CMD }, PLAIN), None);
-        assert_eq!(
-            shortcut(
-                "C",
-                Mods {
-                    shift: true,
-                    ..CTRL
-                },
-                PLAIN
-            ),
-            None
-        );
-        assert_eq!(shortcut("c", Mods { alt: true, ..CMD }, PLAIN), None);
-        assert_eq!(shortcut("ç", Mods { alt: true, ..CMD }, PLAIN), None);
-        assert_eq!(shortcut("c", Mods { alt: true, ..CTRL }, PLAIN), None);
-    }
-
-    #[test]
-    fn download_chord_works_everywhere() {
-        assert_eq!(shortcut("s", CMD, PLAIN), Some(Action::Download));
-        assert_eq!(shortcut("s", CTRL, PLAIN), Some(Action::Download));
-        assert_eq!(shortcut("S", CMD, PLAIN), Some(Action::Download));
-        // Saving is not a text action, so it also works from a text field.
-        assert_eq!(shortcut("s", CMD, IN_FIELD), Some(Action::Download));
-        assert_eq!(shortcut("s", CTRL, SELECTED), Some(Action::Download));
-        // ⌘⇧S (Save As in some apps) and ⌘⌥S are not ours.
-        assert_eq!(shortcut("s", Mods { shift: true, ..CMD }, PLAIN), None);
-        assert_eq!(shortcut("s", Mods { alt: true, ..CTRL }, PLAIN), None);
-        // `S` alone is the scale operation (#13), not Download.
-        assert_eq!(shortcut("s", NONE, PLAIN), None);
-    }
-
-    #[test]
-    fn copy_caption_single_key() {
-        assert_eq!(shortcut("c", NONE, PLAIN), Some(Action::CopyCaption));
-        assert_eq!(shortcut("C", NONE, PLAIN), Some(Action::CopyCaption)); // Caps Lock
-        // A page text selection doesn't matter for a single key.
-        assert_eq!(shortcut("c", NONE, SELECTED), Some(Action::CopyCaption));
-        // Typing "c" in a text field is typing.
-        assert_eq!(shortcut("c", NONE, IN_FIELD), None);
-        // Shift+C (key "C" with shift) and Alt+C are not the bare key.
-        assert_eq!(
-            shortcut(
-                "C",
-                Mods {
-                    shift: true,
-                    ..NONE
-                },
-                PLAIN
-            ),
-            None
-        );
-        assert_eq!(shortcut("c", Mods { alt: true, ..NONE }, PLAIN), None);
-    }
-
-    #[test]
-    fn other_keys_are_ignored() {
-        for key in ["v", "o", "x", "Enter", "Escape", "", "cc"] {
-            assert_eq!(shortcut(key, CMD, PLAIN), None, "{key}");
-            assert_eq!(shortcut(key, NONE, PLAIN), None, "{key}");
-        }
-    }
 
     #[test]
     fn file_name_is_zero_padded_local_timestamp() {

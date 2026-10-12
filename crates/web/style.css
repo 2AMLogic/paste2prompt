@@ -376,3 +376,89 @@ button.primary {
   font-size: 1.2rem;
   line-height: 1;
 }
+
+/* The `?` shortcut sheet (#13), generated from the keymap. */
+.shortcut-sheet {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: color-mix(in srgb, CanvasText 35%, transparent);
+  z-index: 30;
+}
+
+.shortcut-sheet[hidden] {
+  display: none;
+}
+
+.shortcut-sheet-panel {
+  width: min(40rem, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1rem 1.25rem;
+  border-radius: 8px;
+  background: Canvas;
+  color: CanvasText;
+  box-shadow: 0 8px 32px rgb(0 0 0 / 30%);
+}
+
+.shortcut-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.shortcut-sheet-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.shortcut-sheet-note {
+  margin: 0.25rem 0 0.75rem;
+  opacity: 0.75;
+  font-size: 0.9rem;
+}
+
+.shortcut-sheet-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.5rem 1.5rem;
+}
+
+.shortcut-sheet h3 {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+
+.shortcut-sheet table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+
+.shortcut-sheet td {
+  padding: 0.2rem 0;
+  vertical-align: top;
+}
+
+.shortcut-keys {
+  white-space: nowrap;
+  padding-right: 0.75rem;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.85em;
+  text-align: center;
+}

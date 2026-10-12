@@ -14,11 +14,12 @@ use paste2prompt_core::{Document, ImageSize, export_size_ok};
 use wasm_bindgen::JsCast;
 use web_sys::{
     Blob, ClipboardEvent, DataTransfer, DragEvent, Event, EventTarget, File, FileList, HtmlElement,
-    HtmlInputElement, KeyboardEvent,
+    HtmlInputElement,
 };
 
 use crate::image::{self, ImageStore};
-use rules::{DropAction, Entry, Mods, PasteAction};
+use crate::keymap::{self, rules::Action};
+use rules::{DropAction, Entry, PasteAction};
 
 const REPLACE_PROMPT: &str = "Load the new image? It replaces the current image and its edits.";
 const MSG_LOADING: &str = "Loading image…";
@@ -130,25 +131,6 @@ impl ImageInput {
         }
     }
 
-    fn on_keydown(&self, ev: KeyboardEvent) {
-        if ev.default_prevented() {
-            return; // another handler took it
-        }
-        let mods = Mods {
-            ctrl: ev.ctrl_key(),
-            meta: ev.meta_key(),
-            shift: ev.shift_key(),
-            alt: ev.alt_key(),
-        };
-        if rules::is_open_shortcut(&ev.key(), mods) {
-            // Stop the browser's own "Open File" dialog.
-            ev.prevent_default();
-            if !ev.repeat() {
-                self.open_picker();
-            }
-        }
-    }
-
     /// Load the first image in `files`, or explain why there is none.
     fn load_first_image(&self, files: Option<FileList>) {
         let files = files.map(file_vec).unwrap_or_default();
@@ -227,7 +209,6 @@ impl ImageInput {
         let this = *self;
         let handles = [
             window_event_listener(ev::paste, move |e| this.on_paste(e)),
-            window_event_listener(ev::keydown, move |e| this.on_keydown(e)),
             window_event_listener(ev::dragenter, move |e| this.on_drag_enter(e)),
             window_event_listener(ev::dragover, move |e| this.on_drag_over(e)),
             window_event_listener(ev::dragleave, move |e| this.on_drag_leave(e)),
@@ -238,7 +219,9 @@ impl ImageInput {
 }
 
 /// The hidden file input, the drop overlay and the status line, plus the
-/// window listeners for paste, `⌘O` / `Ctrl+O` and drag and drop. Mount once.
+/// window listeners for paste and drag and drop. Mount once. `⌘O` /
+/// `Ctrl+O` is bound in [`crate::keymap`], which calls
+/// [`ImageInput::open_picker`].
 #[component]
 pub fn ImageInputLayer(input: ImageInput) -> impl IntoView {
     input.install_listeners();
@@ -268,8 +251,8 @@ pub fn OpenButton(input: ImageInput, #[prop(optional)] class: &'static str) -> i
         <button
             type="button"
             class=class
-            aria-keyshortcuts="Meta+O Control+O"
-            title="Open an image (⌘O / Ctrl+O)"
+            aria-keyshortcuts=keymap::aria(Action::OpenFile)
+            title=keymap::titled("Open an image", Action::OpenFile)
             on:click=move |_| input.open_picker()
         >
             "Open…"

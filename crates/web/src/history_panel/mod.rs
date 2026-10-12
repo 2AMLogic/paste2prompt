@@ -1,5 +1,5 @@
 //! The history panel (ordered edit list with select, delete and reorder),
-//! the image-level instructions box, and undo/redo (buttons and keys).
+//! the image-level instructions box, and the undo/redo buttons.
 //!
 //! Everything goes through the shared [`Controller`] (see
 //! [`crate::canvas::CanvasState`]), so the panel and the canvas always show
@@ -16,70 +16,33 @@
 //!   keystroke (which coalesces) and [`Controller::end_instructions_edit`]
 //!   on focus and blur, so one typing session is one undo step.
 //!
-//! # Undo/redo keys and #13
+//! # Undo/redo keys
 //!
-//! [`HistoryPanel`] installs a small window `keydown` listener for `⌘Z` /
-//! `Ctrl+Z` (undo) and `⌘⇧Z` / `Ctrl+Shift+Z` / `Ctrl+Y` (redo), decided by
-//! [`rules::history_key`]. It ignores keys another handler already took
-//! (`defaultPrevented`) and keys while a text field has focus, so native
-//! text undo applies there, and calls `preventDefault` only when an undo or
-//! redo actually happened. Its chords never overlap the export (`⌘C`, `⌘S`,
-//! `C`) or input (`⌘O`) shortcuts. The central keymap (#13) should absorb
-//! it: call [`rules::history_key`] from there and delete
-//! [`install_history_keys`].
+//! `⌘Z` / `Ctrl+Z` (undo) and `⌘⇧Z` / `Ctrl+Shift+Z` / `Ctrl+Y` (redo) are
+//! bound in the central keymap ([`crate::keymap`]), which leaves text fields
+//! to their native undo, and makes `Esc` revert a drag-reorder
+//! ([`Controller::cancel_reorder`]).
 
 pub mod rules;
 #[cfg(test)]
 mod tests;
 
-use leptos::ev;
 use leptos::html;
 use leptos::logging::warn;
 use leptos::prelude::*;
 use paste2prompt_core::{EditError, EditId};
 use wasm_bindgen::JsCast;
-use web_sys::{HtmlElement, KeyboardEvent, PointerEvent};
+use web_sys::{HtmlElement, PointerEvent};
 
 use crate::canvas::colors::mark_class;
 use crate::canvas::{CanvasState, Controller};
-use crate::input::target_is_editable;
-use rules::{HistoryKey, Mods, Row, Step, step_index};
+use crate::keymap::{self, rules::Action};
+use rules::{Row, Step, step_index};
 
 fn report(result: Result<(), EditError>) {
     if let Err(e) = result {
         warn!("history change rejected: {e}");
     }
-}
-
-/// Undo/redo keys, for the panel's lifetime. Folds into #13's keymap.
-fn install_history_keys(ctrl: RwSignal<Controller>) {
-    let handle = window_event_listener(ev::keydown, move |ev: KeyboardEvent| {
-        if ev.default_prevented() {
-            return; // another handler (export, input, a future keymap) took it
-        }
-        if ev.is_composing() || target_is_editable(ev.target()) {
-            return; // native text undo
-        }
-        let mods = Mods {
-            ctrl: ev.ctrl_key(),
-            meta: ev.meta_key(),
-            shift: ev.shift_key(),
-            alt: ev.alt_key(),
-        };
-        let Some(key) = rules::history_key(&ev.key(), &ev.code(), mods) else {
-            return;
-        };
-        let done = ctrl
-            .try_update(|c| match key {
-                HistoryKey::Undo => c.undo(),
-                HistoryKey::Redo => c.redo(),
-            })
-            .unwrap_or(false);
-        if done {
-            ev.prevent_default();
-        }
-    });
-    on_cleanup(move || handle.remove());
 }
 
 /// Focuses `selector` once the list has re-rendered, so keyboard users keep
@@ -105,11 +68,10 @@ struct Reorder {
 }
 
 /// The history panel: undo and redo, then one row per edit in order.
-/// Mount once; it also owns the undo/redo keys.
+/// Mount once.
 #[component]
 pub fn HistoryPanel() -> impl IntoView {
     let ctrl = CanvasState::expect().controller;
-    install_history_keys(ctrl);
 
     let list_ref = NodeRef::<html::Ol>::new();
     let reorder = RwSignal::new(None::<Reorder>);
@@ -314,7 +276,8 @@ pub fn HistoryPanel() -> impl IntoView {
                         type="button"
                         data-action="undo"
                         aria-label="Undo"
-                        title="Undo (⌘Z / Ctrl+Z)"
+                        aria-keyshortcuts=keymap::aria(Action::Undo)
+                        title=keymap::titled("Undo", Action::Undo)
                         disabled=move || !ctrl.with(Controller::can_undo)
                         on:click=move |_| {
                             ctrl.update(|c| {
@@ -328,7 +291,8 @@ pub fn HistoryPanel() -> impl IntoView {
                         type="button"
                         data-action="redo"
                         aria-label="Redo"
-                        title="Redo (⌘⇧Z / Ctrl+Shift+Z / Ctrl+Y)"
+                        aria-keyshortcuts=keymap::aria(Action::Redo)
+                        title=keymap::titled("Redo", Action::Redo)
                         disabled=move || !ctrl.with(Controller::can_redo)
                         on:click=move |_| {
                             ctrl.update(|c| {

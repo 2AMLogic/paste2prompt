@@ -73,15 +73,6 @@ impl Tool {
             Self::Lasso => "Lasso",
         }
     }
-
-    /// The single-key shortcut from the spec.
-    pub fn key(self) -> char {
-        match self {
-            Self::Select => 'V',
-            Self::Rect => 'R',
-            Self::Lasso => 'L',
-        }
-    }
 }
 
 /// The kind of operation, without parameters.
@@ -143,17 +134,6 @@ impl OpKind {
             Self::Mirror => "Mirror",
             Self::Rotate => "Rotate",
             Self::Hint => "Hint",
-        }
-    }
-
-    /// The single-key shortcut from the spec.
-    pub fn key(self) -> char {
-        match self {
-            Self::Translate => 'T',
-            Self::Scale => 'S',
-            Self::Mirror => 'M',
-            Self::Rotate => 'O',
-            Self::Hint => 'H',
         }
     }
 }
@@ -797,10 +777,6 @@ impl Controller {
 
 /// Undo, redo, `Esc` and drag state: driven by the history UI (#11) and the
 /// keyboard shortcuts (#13), which land after this module.
-#[allow(
-    dead_code,
-    reason = "API for the undo UI (#11) and keyboard shortcuts (#13); tests cover it"
-)]
 impl Controller {
     /// Whether [`Self::undo`] would do anything.
     pub fn can_undo(&self) -> bool {
@@ -942,8 +918,16 @@ impl Controller {
         }
     }
 
-    /// Abandons a drag-reorder (`pointercancel`), restoring the order it
-    /// started from.
+    /// Whether a drag-reorder is in progress (between
+    /// [`Self::begin_reorder`] and its end or cancel), so `Esc` reverts it.
+    pub fn reordering(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|s| s.drag.is_none() && s.editor.in_gesture())
+    }
+
+    /// Abandons a drag-reorder (`pointercancel`, or `Esc`), restoring the
+    /// order it started from.
     pub fn cancel_reorder(&mut self) {
         if let Some(s) = &mut self.session
             && s.drag.is_none()
