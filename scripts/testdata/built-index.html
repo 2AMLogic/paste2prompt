@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>paste2prompt</title>
+    <!-- data-integrity="none": trunk would put an integrity hash on the .wasm
+         preload, which Chrome ignores with a console warning (crbug 981419).
+         Both preloads are same-origin and script-src is 'self' plus a hash. -->
+    
+<script type="module">
+import init, * as bindings from '/paste2prompt-web-51b82b230cadc1f8.js';
+const wasm = await init({ module_or_path: '/paste2prompt-web-51b82b230cadc1f8_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    <link rel="stylesheet" href="/style-8d3522300fbd0d7f.css" integrity="sha384-D8gxZeJzvJcpuV57qjv1gWGnq8dZEThb2mabYLmO4s6OjZMmJcB8Dawy7gaC6jHJ"/>
+    
+    
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="modulepreload" href="/paste2prompt-web-51b82b230cadc1f8.js" crossorigin="anonymous"><link rel="preload" href="/paste2prompt-web-51b82b230cadc1f8_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm"></head>
+  <body></body>
+</html>

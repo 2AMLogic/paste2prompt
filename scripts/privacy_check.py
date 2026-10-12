@@ -19,7 +19,11 @@ fails closed instead of going unscanned.
    LOADER_ALLOWLIST). Any other JS file gets no allowance.
 2. HTML: only top-level .html is allowed. Inline scripts (trunk's loader) use
    no network API, no URL attribute (src, href, srcset, poster, action, ...)
-   names another origin, and there is no `<meta http-equiv="refresh">`. CSS
+   names another origin, and there is no `<meta http-equiv="refresh">`. No
+   inline CSS at all: any `<style>` element or `style` attribute is a finding
+   (anywhere in the document, including inside <template>, <noscript> or an
+   inline <svg>), matching the CSP's `style-src 'self'`, which blocks them in
+   a browser anyway. The app has none (trunk's index.html has none). CSS
    (any depth) fails closed: no construct that can load a URL at all, not
    even a same-origin one, and no backslash escape (CSS_RISKY). SVG (any depth,
    the favicon): only plain drawing elements, no event handlers, no href
@@ -370,14 +374,31 @@ def _attr_urls(key: str, value: str) -> list[str]:
 
 
 class InlineScripts(HTMLParser):
+    """Inline scripts, external URL attributes and inline CSS in an HTML file.
+
+    html.parser lowercases tag and attribute names, takes attribute values
+    quoted or not, and does not treat <template>, <noscript> or <svg>
+    specially, so a <style> or style= inside any of them is still seen.
+    """
+
     def __init__(self, convert_charrefs: bool) -> None:
         super().__init__(convert_charrefs=convert_charrefs)
         self.scripts: list[str] = []
         self.external: list[str] = []
+        self.inline_css: list[str] = []
         self._buf: list[str] | None = None
 
     def handle_starttag(self, tag, attrs):
+        # Inline CSS fails closed (#67), like CSS in SVG (#62): the CSP's
+        # style-src 'self' blocks it, the app uses none, so its contents are
+        # not scanned. A valueless `style` attribute counts too.
+        if tag == "style":
+            self.inline_css.append(f"inline <style> element at line {self.getpos()[0]}: {attrs!r}")
         for key, value in attrs:
+            if key == "style":
+                self.inline_css.append(
+                    f"inline style attribute at line {self.getpos()[0]}: <{tag} style={(value or '')[:80]!r}>"
+                )
             if key in URL_ATTRS and value:
                 for url in _attr_urls(key, value):
                     if EXTERNAL_URL.match(url):
@@ -441,6 +462,8 @@ def check_html(path: Path, f: Findings) -> list[str]:
             f.add(str(path), ref)
         else:
             f.add(str(path), f"reference to another origin: {ref}")
+    for css in decoded.inline_css:
+        f.add(str(path), f"{css}; inline CSS is not allowed (CSP style-src 'self'), use a .css file")
     for script in raw.scripts:
         for m in NETWORK_JS.finditer(script):
             f.add(str(path), f"network or navigation API {m.group(0)!r} in inline script")
