@@ -685,7 +685,7 @@ class FileTypesAnyCase(GuardTest):
 
     def test_uppercase_css_is_scanned(self):
         self.fx.write("dist/extra.CSS", "a { background: url(https://x.example/a.png); }\n")
-        self.assertFails("extra.CSS", "CSS reference to another origin")
+        self.assertFails("extra.CSS", "CSS construct that can load a URL")
 
     def test_htm_fails_closed(self):
         self.fx.write("dist/page.htm", "<p>hi</p>")
@@ -975,18 +975,80 @@ class NonBlocking(GuardTest):
         self.fx.headers()
         self.assertPasses()
 
-    def test_css_url_and_import(self):
-        for css in [
-            "body { background: url(https://x.example/a.png); }",
-            "body { background: url('//x.example/a.png'); }",
-            '@import "https://x.example/a.css";',
-        ]:
-            with self.subTest(css=css):
-                self.fx.write("dist/style-1.css", css + "\n")
-                self.assertFails("CSS reference to another origin")
 
-    def test_css_local_url_passes(self):
-        self.fx.write("dist/style-1.css", "a { background: url(/i.png); } b { mask: url(data:image/svg+xml,x); }\n")
+
+class CssFailsClosed(GuardTest):
+    """#63: a .css file may hold nothing that can load a URL, and no escape."""
+
+    MUST_FAIL = {
+        # The three bypasses of the old url()/@import regex, from the issue.
+        "escaped url": "a{background:\\75rl(//evil.example/x)}",
+        "image-set string": 'a{background-image:image-set("//evil.example/x.png" 1x)}',
+        "@import no space": '@import"//evil.example/a.css";',
+        # Other spellings of the same three.
+        "long escape": "a{background:\\0075rl(//evil.example/x)}",
+        "escape with trailing space": "a{background:\\75 rl(//evil.example/x)}",
+        "escaped @import": '@\\69mport "//evil.example/a.css";',
+        "escape in a string": 'a{content:"\\2014"}',
+        "uppercase URL(": "a{background:URL(//evil.example/x)}",
+        "mixed case Url(": "a{background:Url( '//evil.example/x' )}",
+        "space before paren": "a{background:url (//evil.example/x)}",
+        "newline before paren": "a{background:url\n(//evil.example/x)}",
+        "newline inside url(": "a{background:url(\n  //evil.example/x\n)}",
+        "@IMPORT": '@IMPORT "//evil.example/a.css";',
+        "@import url()": "@import url(//evil.example/a.css);",
+        "@import newline": '@import\n"//evil.example/a.css";',
+        "@import tab": '@import\t"//evil.example/a.css";',
+        "-webkit-image-set": 'a{background:-webkit-image-set("//evil.example/x.png" 1x)}',
+        "IMAGE-SET newline": 'a{background:IMAGE-SET(\n"//evil.example/x.png" 1x)}',
+        "image()": 'a{background:image("//evil.example/x.png")}',
+        "src()": 'a{background:src("//evil.example/x.png")}',
+        "@font-face": '@font-face{font-family:x;src:url(//evil.example/f.woff2)}',
+        "@font-face local only": "@font-face{font-family:x;src:local(Arial)}",
+        "@namespace": '@namespace svg url(http://www.w3.org/2000/svg);',
+        "expression(": "a{width:expression(fetch('//evil.example'))}",
+        # Fail closed: same-origin and data: URLs are refused too.
+        "same-origin url": "a{background:url(/i.png)}",
+        "data: url": "b{mask:url(data:image/svg+xml,x)}",
+        # A /* inside a string must not hide what follows from the guard.
+        "comment opener in a string": 'a{content:"/*"}b{background:url(//evil.example/x)}c{content:"*/"}',
+        "inside a comment": "/* background: url(//evil.example/x) */ a{color:red}",
+    }
+
+    def test_must_fail(self):
+        for name, css in self.MUST_FAIL.items():
+            with self.subTest(name):
+                self.fx.write("dist/style-1.css", "body{margin:0}\n" + css + "\n")
+                out = self.assertFails("style-1.css:2", "CSS construct that can load a URL")
+                self.assertEqual(out.count("CSS construct"), len(privacy_check.css_risks(css)))
+
+    def test_nested_css_is_scanned(self):
+        self.fx.write("dist/assets/x/extra.css", "@import'//evil.example/a.css';\n")
+        self.assertFails("extra.css:1", "CSS construct that can load a URL")
+
+    def test_real_stylesheet_passes(self):
+        """The app's own stylesheet, which trunk copies into dist/."""
+        real = Path(__file__).resolve().parent.parent / "crates" / "web" / "style.css"
+        text = real.read_text(encoding="utf-8")
+        self.assertGreater(len(text), 1000)
+        self.assertEqual(privacy_check.css_risks(text), [])
+        self.fx.write("dist/style-1.css", text)
+        self.assertPasses()
+
+    def test_harmless_lookalikes_pass(self):
+        # Words that only contain a token's letters are not that token.
+        self.fx.write("dist/style-1.css", "a{background-image:none;font-family:serif}"
+                      " .url{color:red} b::after{content:'@ import'}\n")
+        self.assertPasses()
+
+    def test_svg_check_shares_the_rule(self):
+        # One helper, so the .css and SVG checks cannot drift apart.
+        ns = 'xmlns="http://www.w3.org/2000/svg"'
+        for css in ['src("//evil.example/x")', 'image("//evil.example/x")', "\\0075rl(//evil.example/x)"]:
+            with self.subTest(css=css):
+                self.fx.write("dist/favicon.svg", f"<svg {ns}><rect fill='{css}'/></svg>")
+                self.assertFails("holds CSS that is not a local url(#id)")
+        self.fx.write("dist/favicon.svg", f"<svg {ns}><rect fill='url(#g)'/></svg>")
         self.assertPasses()
 
 
