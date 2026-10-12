@@ -40,6 +40,9 @@ pub enum Action {
     Tool(Tool),
     /// Pick an operation (`M` again toggles the mirror axis).
     Op(OpKind),
+    /// `N`: focus the selected edit's name field, or, with nothing
+    /// selected, make the next region drawn a label (a name only).
+    Name,
     /// `Esc`: cancel a canvas drag, else a history reorder, else deselect.
     /// Closes the shortcut sheet when it is open.
     Cancel,
@@ -74,6 +77,10 @@ impl Action {
             Self::Op(OpKind::Mirror) => "Operation: mirror (press again to switch the axis)",
             Self::Op(OpKind::Rotate) => "Operation: rotate",
             Self::Op(OpKind::Hint) => "Operation: hint (focuses the hint field)",
+            Self::Op(OpKind::Label) => "Operation: label (a name only)",
+            Self::Name => {
+                "Name the selected region, or label the next region drawn (focuses the name field)"
+            }
             Self::Cancel => "Cancel the current drag or reorder, or deselect",
             Self::DeleteSelected => "Delete the selected edit",
             Self::Undo => "Undo",
@@ -91,7 +98,7 @@ impl Action {
     pub fn section(self) -> &'static str {
         match self {
             Self::Tool(_) => "Tools",
-            Self::Op(_) => "Operations",
+            Self::Op(_) | Self::Name => "Operations",
             Self::Cancel | Self::DeleteSelected | Self::Undo | Self::Redo => "Editing",
             Self::PasteImage | Self::OpenFile => "Image",
             Self::Download | Self::CopyImage | Self::CopyCaption => "Export",
@@ -206,6 +213,7 @@ pub const BINDINGS: &[Binding] = &[
     letter('m', Action::Op(OpKind::Mirror)),
     letter('o', Action::Op(OpKind::Rotate)),
     letter('h', Action::Op(OpKind::Hint)),
+    letter('n', Action::Name),
     bind(Key::Named("Escape"), Mods::None, Action::Cancel, EDITOR),
     bind(
         Key::Named("Delete"),
@@ -290,16 +298,16 @@ pub fn event_letter(key: &str, code: &str) -> Option<char> {
 ///
 /// The alternative, "alphabetic and not in a Latin block", would cover every
 /// non-Latin script, but `char::is_alphabetic` is also true for many things
-/// that are neither: letterlike symbols (`ℓ`, `K` U+212A), circled and
-/// parenthesized letters (`ⓜ`), Roman numerals (`Ⅿ`), fullwidth and
-/// mathematical Latin (`Ｍ`, `𝐦`), small capitals and superscripts (`ᴍ`,
-/// `ᵐ`), and Latin blocks added in later Unicode versions (Latin
-/// Extended-F/G). A denylist lets each one fall back to the physical key
+/// that are neither: letterlike symbols (`ℓ`, `K` U+212A), circled letters
+/// (`ⓜ`), Roman numerals (`Ⅿ`), fullwidth and mathematical Latin (`Ｍ`,
+/// `𝐦`), small capitals and superscripts (`ᴍ`, `ᵐ`), and Latin blocks
+/// added in later Unicode versions (Latin Extended-F/G). A denylist lets each one fall back to the physical key
 /// unless someone remembered to list its block, and a slip fires the wrong
 /// shortcut. With an allowlist, a missing block only leaves the shortcuts on
-/// that layout doing nothing, which is safe. So this list names every
-/// non-Latin script with a keyboard layout shipped by Windows, macOS or
-/// Linux. Latin blocks are deliberately absent, as are symbol blocks.
+/// that layout doing nothing, which is safe. So this list names the common
+/// non-Latin scripts that OS keyboard layouts type; a script not listed
+/// simply gets no shortcut fallback. Latin blocks are deliberately absent,
+/// as are symbol blocks.
 const NON_LATIN_BLOCKS: &[(char, char)] = &[
     ('\u{0370}', '\u{03FF}'),   // Greek and Coptic
     ('\u{0400}', '\u{052F}'),   // Cyrillic, Cyrillic Supplement
@@ -571,6 +579,7 @@ pub fn apply(action: Action, c: &mut Controller) -> Option<bool> {
             loaded
         }
         Action::Op(kind) => loaded && c.choose_op(kind).is_ok(),
+        Action::Name => c.name_key(),
         Action::Cancel => escape(c),
         Action::DeleteSelected => c.delete_selected(),
         Action::Undo => c.undo(),

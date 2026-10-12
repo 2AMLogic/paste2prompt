@@ -61,9 +61,30 @@ need to be approximate, so a lasso is a smooth closed curve through a few
 | Mirror | axis (horizontal or vertical) | Toggle |
 | Rotate | degrees, anchor | Drag the rotation handle; Shift snaps to 15° |
 | Hint | free text | Text field |
+| Label | name only | `N` with nothing selected, then draw the region; the name field takes focus |
 
 A **hint** can sit on its own or ride along with any other op ("move this
 here *and* make it blue").
+
+**Named regions.** Any edit can have an optional **name**, so the
+instructions and the model's reply can refer to the region by it ("put the
+logo next to the search box"). A hint is an instruction; a name is a
+referent. A **label** is a region that is named and not transformed: it
+changes nothing. Type the name in the name field next to the hint field,
+or press `N` to focus it for the selected edit. A new label starts as
+`label 1` (the first free number), selected so typing replaces it.
+
+- Names are trimmed, at most 40 characters, and can't contain line breaks
+  or invisible format characters (zero-width or text-direction marks), or
+  be only digits (`1 2` would read as two badge numbers). A blank name is
+  no name; a label must keep one. A rejected name stays in the field, with
+  its message, until the field loses focus.
+- Names are unique within the image, compared case-insensitively, so "the
+  logo" is never ambiguous. A duplicate is rejected with a message under the
+  name field.
+- Typing a name is one undo step, like typing a hint.
+- The JSON document format is version 2 (each edit gains `name`); version 1
+  documents, which have no names, still load.
 
 All coordinates are stored and printed as **% of image width and height**,
 so they survive chat apps downscaling the image. Pixel values can be shown
@@ -106,6 +127,13 @@ different things:
   - Rotate and scale draw a ghost of the transformed outline.
   - Mirror draws a ghost of the mirrored outline, plus a glyph on the
     mirror axis.
+  - A named region's badge shows its number and its name (`1 logo`), so the
+    mark itself carries the name the caption and the reply use. A label
+    draws only its outline and badge, with no ghost. The wide named badge
+    goes above the region, flush with its left (or right) edge, so it sits
+    over its own region's span rather than a neighbour's; a long name is
+    cut short with `…` on the badge (at most 40% of the image width,
+    within 6–12 badge heights), and the caption keeps it whole.
 - **Bottom:** a caption band in a clearly separate color, with a fixed header:
   ```
   paste2prompt edit list (user-authored)
@@ -114,6 +142,17 @@ different things:
   #2  rotate     region (60%,10%)-(80%,25%)  →  rotate 90° clockwise about center
   #3  hint       lasso around (50%,70%)      →  "make this button red"
   Overall: tighten the spacing between the cards
+  ```
+  When any region has a name, a third header line says so, and a named
+  region prints its quoted name in place of `region` or `lasso`. Names are
+  quoted like hints (inner double quotes become single quotes):
+  ```
+  paste2prompt edit list (user-authored)
+  Coordinates are % of image width/height. Edits refer to the original image.
+  Named regions can be referred to by name in the instructions and in your reply.
+  #1  label      "nav bar" (0%,0%)-(100%,8%)  →  named "nav bar"
+  #2  translate  "logo" (12%,30%)-(40%,52%)   →  move right 15%, up 4%
+  Overall: put the logo next to the search box
   ```
 - The caption wraps to the image width, with a minimum width so it stays
   legible on narrow images.
@@ -146,7 +185,7 @@ chords:
   AltGr on many European layouts.
 - `⌘⇧T` / `Ctrl+Shift+T` reopens a closed tab.
 - `⌘W` / `Ctrl+W` (close tab), `⌘T` / `Ctrl+T` (new tab) and `⌘N` / `Ctrl+N`
-  (new window) can't be overridden at all.
+  (new window) can't be overridden at all. `N` (name) is a single key only.
 
 | Key | Action |
 |---|---|
@@ -158,6 +197,7 @@ chords:
 | `M` | Operation: mirror (press again to switch axis) |
 | `O` | Operation: rotate |
 | `H` | Operation: hint (focus the hint field) |
+| `N` | Name: focus the selected edit's name field; with nothing selected, the next region drawn is a label and its name field takes focus |
 | `Esc` | Cancel the current region or operation |
 | `Delete` / `Backspace` | Delete the selected edit |
 | `⌘Z` / `Ctrl+Z` | Undo |
@@ -177,12 +217,12 @@ Ethiopic, Korean, Japanese kana…), the physical key decides instead
 letters outside ASCII (Turkish `ı`, BÉPO `è`, Ewe `ɔ`) and symbols (Linux
 AltGr's `µ`) never fall back to the physical key, and nothing fires with
 AltGr held. The non-Latin scripts are an allowlist of Unicode blocks, one
-for each script with a keyboard layout shipped by Windows, macOS or Linux,
-and only the letters in those blocks count. Many symbols are letters to
-Unicode (letterlike `ℓ`, circled `ⓜ`, Roman numeral `Ⅿ`, fullwidth `Ｍ`).
-A denylist of Latin blocks would let each one through. With the allowlist,
-a script nobody listed only leaves the shortcuts on that layout doing
-nothing. `?` matches the typed character, and holding
+for the common non-Latin scripts with OS keyboard layouts (an unlisted
+script simply gets no shortcut fallback), and only the letters in those
+blocks count. Many symbols are letters to Unicode (letterlike `ℓ`, circled
+`ⓜ`, Roman numeral `Ⅿ`, fullwidth `Ｍ`). A denylist of Latin blocks would let
+each one through. With the allowlist, a script nobody listed only leaves the
+shortcuts on that layout doing nothing. `?` matches the typed character, and holding
 it doesn't toggle the sheet. The sheet shows ⌘ on macOS and Ctrl elsewhere.
 
 ## Architecture
