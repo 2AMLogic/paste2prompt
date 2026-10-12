@@ -350,14 +350,17 @@ header button {
   display: none;
 }
 
+/* Sized so each row fits a 320px phone (288px inside the page padding). */
 @media (max-width: 40rem) {
-  header {
-    gap: 0.5rem;
+  header,
+  .header-actions,
+  .export-toolbar {
+    gap: 0.4rem;
   }
 
   header h1 {
     flex: 1 1 auto;
-    font-size: 1.1rem;
+    font-size: 1.05rem;
   }
 
   .header-actions {
@@ -367,7 +370,7 @@ header button {
 
   header button {
     min-height: 2.75rem;
-    padding: 0.35rem 0.6rem;
+    padding: 0.35rem 0.5rem;
   }
 
   header .label-full {
