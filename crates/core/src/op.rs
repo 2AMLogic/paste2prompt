@@ -13,7 +13,8 @@ pub enum Anchor {
     /// The center of the region's bounding rectangle (the spec's default).
     #[default]
     Center,
-    /// A fixed point in normalized image coordinates.
+    /// A fixed point in normalized image coordinates, within `0.0..=1.0` on
+    /// both axes (checked by [`Op::validate`]).
     Point(Point),
 }
 
@@ -48,6 +49,9 @@ impl MirrorAxis {
         }
     }
 }
+
+/// The largest scale factor [`Op::validate`] accepts on either axis.
+pub const MAX_SCALE: f64 = 100.0;
 
 /// What the user asks the model to do with a region (spec §Operations).
 ///
@@ -117,7 +121,17 @@ impl Op {
         }
     }
 
-    /// Checks the parameters: every number finite, scale factors positive.
+    /// Checks the parameters:
+    ///
+    /// - every number is finite;
+    /// - translate `dx` and `dy` are within `-1.0..=1.0` (a move past the full
+    ///   image width or height is meaningless);
+    /// - scale `sx` and `sy` are positive and at most [`MAX_SCALE`];
+    /// - an [`Anchor::Point`] is inside the image (`0.0..=1.0` on both axes).
+    ///
+    /// The editor calls this on [`add_edit`](crate::Editor::add_edit) and
+    /// [`set_op`](crate::Editor::set_op), and loading a document calls it on
+    /// every edit, so a stored op always passes.
     pub fn validate(&self) -> Result<(), OpError> {
         let finite = |v: f64| {
             if v.is_finite() {
@@ -129,7 +143,11 @@ impl Op {
         match *self {
             Self::Translate { dx, dy } => {
                 finite(dx)?;
-                finite(dy)
+                finite(dy)?;
+                if !(-1.0..=1.0).contains(&dx) || !(-1.0..=1.0).contains(&dy) {
+                    return Err(OpError::OutOfRange);
+                }
+                Ok(())
             }
             Self::Scale { sx, sy, anchor } => {
                 finite(sx)?;
@@ -137,6 +155,9 @@ impl Op {
                 validate_anchor(anchor)?;
                 if sx <= 0.0 || sy <= 0.0 {
                     return Err(OpError::NonPositiveScale);
+                }
+                if sx > MAX_SCALE || sy > MAX_SCALE {
+                    return Err(OpError::OutOfRange);
                 }
                 Ok(())
             }
@@ -186,8 +207,9 @@ impl Op {
 fn validate_anchor(anchor: Anchor) -> Result<(), OpError> {
     match anchor {
         Anchor::Center => Ok(()),
-        Anchor::Point(p) if p.x.is_finite() && p.y.is_finite() => Ok(()),
-        Anchor::Point(_) => Err(OpError::NotFinite),
+        Anchor::Point(p) if !(p.x.is_finite() && p.y.is_finite()) => Err(OpError::NotFinite),
+        Anchor::Point(p) if (0.0..=1.0).contains(&p.x) && (0.0..=1.0).contains(&p.y) => Ok(()),
+        Anchor::Point(_) => Err(OpError::AnchorOutOfRange),
     }
 }
 
@@ -235,6 +257,12 @@ pub enum OpError {
     NotFinite,
     /// A scale factor was zero or negative (use mirror to flip).
     NonPositiveScale,
+    /// A translate offset was outside `-1.0..=1.0`, or a scale factor was
+    /// above [`MAX_SCALE`].
+    OutOfRange,
+    /// An [`Anchor::Point`] was outside the image (`0.0..=1.0` on either
+    /// axis). Clamp it (e.g. with [`Point::clamped`]) before passing it in.
+    AnchorOutOfRange,
 }
 
 impl fmt::Display for OpError {
@@ -242,6 +270,8 @@ impl fmt::Display for OpError {
         f.write_str(match self {
             Self::NotFinite => "operation parameter is not a finite number",
             Self::NonPositiveScale => "scale factors must be positive",
+            Self::OutOfRange => "translate offset outside -1..1 or scale factor above 100",
+            Self::AnchorOutOfRange => "anchor point outside the image (0..1)",
         })
     }
 }
@@ -290,6 +320,72 @@ mod tests {
         );
         assert!(Op::Hint.validate().is_ok());
         assert!(Op::uniform_scale(2.0).validate().is_ok());
+    }
+
+    #[test]
+    fn validate_bounds_magnitudes() {
+        let t = |dx, dy| Op::Translate { dx, dy }.validate();
+        let s = |sx, sy| {
+            Op::Scale {
+                sx,
+                sy,
+                anchor: Anchor::Center,
+            }
+            .validate()
+        };
+        let r = |degrees| {
+            Op::Rotate {
+                degrees,
+                anchor: Anchor::Center,
+            }
+            .validate()
+        };
+        // Translate: within the full image size either way.
+        for (dx, dy) in [(1.0, -1.0), (-1.0, 1.0), (0.0, 0.0), (0.5, -0.25)] {
+            assert!(t(dx, dy).is_ok());
+        }
+        for (dx, dy) in [(-1e18, 0.0), (0.0, 1e18), (1.0001, 0.0), (0.0, -1.5)] {
+            assert_eq!(t(dx, dy), Err(OpError::OutOfRange));
+        }
+        assert_eq!(t(f64::NEG_INFINITY, 0.0), Err(OpError::NotFinite));
+        // Scale: positive and at most MAX_SCALE.
+        assert!(s(MAX_SCALE, 0.01).is_ok());
+        assert!(s(f64::MIN_POSITIVE, 1.0).is_ok());
+        assert_eq!(s(100.5, 1.0), Err(OpError::OutOfRange));
+        assert_eq!(s(1.0, 1e300), Err(OpError::OutOfRange));
+        assert_eq!(s(0.0, 1.0), Err(OpError::NonPositiveScale));
+        assert_eq!(s(1.0, -0.0), Err(OpError::NonPositiveScale));
+        assert_eq!(s(f64::NAN, 1.0), Err(OpError::NotFinite));
+        // Rotate: any finite angle.
+        assert!(r(-720.0).is_ok() && r(1e6).is_ok());
+        assert_eq!(r(f64::NAN), Err(OpError::NotFinite));
+    }
+
+    #[test]
+    fn validate_requires_anchor_point_inside_image() {
+        let rotate = |x, y| Op::Rotate {
+            degrees: 10.0,
+            anchor: Anchor::Point(Point::new(x, y)),
+        };
+        let scale = |x, y| Op::Scale {
+            sx: 2.0,
+            sy: 2.0,
+            anchor: Anchor::Point(Point::new(x, y)),
+        };
+        for (x, y) in [(-0.01, 0.5), (0.5, 1.01), (-50.0, 9e9)] {
+            assert_eq!(rotate(x, y).validate(), Err(OpError::AnchorOutOfRange));
+            assert_eq!(scale(x, y).validate(), Err(OpError::AnchorOutOfRange));
+        }
+        assert_eq!(rotate(f64::NAN, 0.5).validate(), Err(OpError::NotFinite));
+        assert_eq!(
+            scale(0.5, f64::INFINITY).validate(),
+            Err(OpError::NotFinite)
+        );
+        // The edges are inside the image.
+        for (x, y) in [(0.0, 0.0), (1.0, 1.0), (0.25, 0.75)] {
+            assert!(rotate(x, y).validate().is_ok());
+            assert!(scale(x, y).validate().is_ok());
+        }
     }
 
     #[test]
