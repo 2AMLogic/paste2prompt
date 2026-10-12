@@ -1015,6 +1015,29 @@ impl Controller {
         }
     }
 
+    /// Whether [`Self::clear_edits`] would do anything: the document has
+    /// an edit or instructions.
+    pub fn can_clear_edits(&self) -> bool {
+        self.editor().is_some_and(|e| {
+            let doc = e.document();
+            !doc.edits().is_empty() || !doc.instructions().is_empty()
+        })
+    }
+
+    /// **Clear edits**: removes every edit and the instructions as one undo
+    /// step ([`Editor::clear_all`]), keeping the image. A canvas drag or a
+    /// drag-reorder in progress is reverted first, leaving no step of its
+    /// own. Returns whether anything was cleared.
+    pub fn clear_edits(&mut self) -> bool {
+        self.cancel_in_progress();
+        let Some(s) = &mut self.session else {
+            return false;
+        };
+        let cleared = s.editor.clear_all();
+        self.revalidate_selection();
+        cleared
+    }
+
     /// Call when the instructions box gains or loses focus, so one typing
     /// session is one undo step of its own.
     pub fn end_instructions_edit(&mut self) {
@@ -1841,5 +1864,75 @@ mod tests {
         assert!(!c.take_name_focus());
         // A label can't lose its name.
         assert!(name_message(&c.set_name("  ").unwrap_err(), "").is_some());
+    }
+
+    #[test]
+    fn clear_edits_is_one_undo_step() {
+        let mut c = loaded();
+        let a = rect(&mut c);
+        c.set_hint("bigger").unwrap();
+        drag(&mut c, Pointer::at(120.0, 20.0), Pointer::at(160.0, 60.0));
+        c.set_instructions("tighten");
+        let before = c.editor().unwrap().document().clone();
+        assert!(c.can_clear_edits());
+        assert!(c.clear_edits());
+        assert!(edits(&c).is_empty());
+        assert_eq!(c.instructions(), "");
+        assert_eq!(c.selected(), None);
+        assert!(!c.can_clear_edits());
+        assert!(c.undo());
+        assert_eq!(c.editor().unwrap().document(), &before);
+        assert!(c.redo());
+        assert!(edits(&c).is_empty());
+        // The edit that was selected is gone, so nothing is selected.
+        assert!(c.undo());
+        c.select(Some(a));
+        assert_eq!(c.selected(), Some(a));
+    }
+
+    #[test]
+    fn clear_edits_with_nothing_to_clear_does_nothing() {
+        let mut c = Controller::new();
+        assert!(!c.can_clear_edits() && !c.clear_edits());
+        let mut c = loaded();
+        assert!(!c.can_clear_edits() && !c.clear_edits());
+        assert!(!c.can_undo());
+        c.set_instructions("x");
+        assert!(c.can_clear_edits());
+    }
+
+    #[test]
+    fn clear_edits_mid_drag_reverts_the_drag_first() {
+        let mut c = loaded();
+        rect(&mut c);
+        c.pointer_down(Pointer::at(40.0, 40.0));
+        c.pointer_move(Pointer::at(120.0, 40.0));
+        assert!(c.clear_edits());
+        assert!(!c.dragging());
+        assert!(edits(&c).is_empty());
+        // Undo brings back the rect as it was before the drag, and the
+        // abandoned drag left no step.
+        assert!(c.undo());
+        assert_eq!(edits(&c)[0].op(), &Op::Translate { dx: 0.0, dy: 0.0 });
+        assert!(c.undo());
+        assert!(edits(&c).is_empty());
+        assert!(!c.can_undo());
+    }
+
+    #[test]
+    fn clear_edits_mid_reorder_reverts_the_reorder_first() {
+        let mut c = loaded();
+        let a = rect(&mut c);
+        let b = {
+            drag(&mut c, Pointer::at(120.0, 20.0), Pointer::at(160.0, 60.0));
+            c.selected().unwrap()
+        };
+        assert!(c.begin_reorder());
+        c.reorder_to(b, 0).unwrap();
+        assert!(c.clear_edits());
+        assert!(!c.reordering());
+        assert!(c.undo());
+        let order: Vec<EditId> = edits(&c).iter().map(Edit::id).collect();
+        assert_eq!(order, [a, b]);
     }
 }

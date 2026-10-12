@@ -12,6 +12,8 @@
 //! - Dragging a row by its grip is one gesture
 //!   ([`Controller::begin_reorder`] … [`Controller::end_reorder`]), so one
 //!   undo step however far it moves; `pointercancel` reverts it.
+//! - **Clear edits** is [`Controller::clear_edits`]: every edit and the
+//!   instructions go in one undo step, so it needs no confirmation.
 //! - The instructions box calls [`Controller::set_instructions`] per
 //!   keystroke (which coalesces) and [`Controller::end_instructions_edit`]
 //!   on focus and blur, so one typing session is one undo step.
@@ -277,6 +279,23 @@ pub fn HistoryPanel() -> impl IntoView {
         <aside class="history-panel" aria-label="Edit history">
             <div class="history-header">
                 <h2>"Edits"</h2>
+                <button
+                    type="button"
+                    class="history-clear"
+                    data-action="clear-edits"
+                    aria-label="Clear edits: remove every edit and the instructions (undoable)"
+                    title="Remove every edit and the instructions. Undo brings them back."
+                    disabled=move || !ctrl.with(Controller::can_clear_edits)
+                    on:click=move |_| {
+                        ctrl.update(|c| {
+                            c.clear_edits();
+                        });
+                        // This button is now disabled: keep focus nearby.
+                        focus_later("[data-action=\"undo\"]".to_owned());
+                    }
+                >
+                    "Clear edits"
+                </button>
                 <div class="history-undo" role="group" aria-label="Undo and redo">
                     <button
                         type="button"

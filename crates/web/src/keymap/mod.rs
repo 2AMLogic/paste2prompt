@@ -315,6 +315,9 @@ pub fn ShortcutLayer(input: ImageInput, exporter: Exporter) -> impl IntoView {
                 <p class="shortcut-sheet-note">
                     "Single-key shortcuts are off while you type in a text field."
                 </p>
+                <p class="shortcut-sheet-note">
+                    "Start over and Clear edits have no shortcut, so a stray key can't clear your work."
+                </p>
                 <div class="shortcut-sheet-body">{sections}</div>
             </div>
         </div>

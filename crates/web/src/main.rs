@@ -14,7 +14,7 @@ use crate::canvas::{CanvasState, CanvasToolbar, CanvasView, SourceImage};
 use crate::export::{DocumentSource, ExportToolbar, Exporter};
 use crate::history_panel::{HistoryPanel, InstructionsBox};
 use crate::image::ImageStore;
-use crate::input::{ImageInput, ImageInputLayer, OpenButton};
+use crate::input::{ImageInput, ImageInputLayer, OpenButton, StartOverButton};
 use crate::keymap::{ShortcutLayer, Shortcuts, ShortcutsButton, rules::Action as KeyAction};
 
 fn main() {
@@ -22,7 +22,7 @@ fn main() {
     leptos::mount::mount_to_body(App);
 }
 
-/// App shell: header with **Open**, the empty state until an image is
+/// App shell: header with **Open** and **Start over**, the empty state until an image is
 /// loaded, then the canvas view with its tools, the instructions box and
 /// the history panel, plus the keyboard shortcuts and their `?` sheet.
 #[component]
@@ -47,6 +47,14 @@ fn App() -> impl IntoView {
     // to try them.
     #[cfg(debug_assertions)]
     let test_pattern = RwSignal::new_local(None::<SourceImage>);
+    // A real image replaces the test card for good, so Start over shows
+    // the empty state rather than the card again.
+    #[cfg(debug_assertions)]
+    Effect::new(move |_| {
+        if current.with(Option::is_some) {
+            test_pattern.set(None);
+        }
+    });
     #[cfg(debug_assertions)]
     let fallback = move || test_pattern.get();
     #[cfg(not(debug_assertions))]
@@ -81,6 +89,7 @@ fn App() -> impl IntoView {
         <header>
             <h1>{APP_NAME}</h1>
             <OpenButton input />
+            <StartOverButton input />
             <ExportToolbar exporter />
             <ShortcutsButton />
         </header>
