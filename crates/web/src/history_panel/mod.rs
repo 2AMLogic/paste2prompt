@@ -34,6 +34,7 @@ use paste2prompt_core::{EditError, EditId};
 use wasm_bindgen::JsCast;
 use web_sys::{HtmlElement, PointerEvent};
 
+use crate::canvas::colors::mark_class;
 use crate::canvas::{CanvasState, Controller};
 use crate::keymap::{self, rules::Action};
 use rules::{Row, Step, step_index};
@@ -217,7 +218,7 @@ pub fn HistoryPanel() -> impl IntoView {
                     title=label
                     on:click=move |_| ctrl.update(|c| c.select(Some(id)))
                 >
-                    <span class="badge">{number}</span>
+                    <span class=format!("badge {}", mark_class(number))>{number}</span>
                     <span class="history-op">{op}</span>
                     <span class="history-summary">{summary}</span>
                 </button>
