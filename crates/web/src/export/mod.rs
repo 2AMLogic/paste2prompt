@@ -4,7 +4,11 @@
 //!
 //! The export is rendered only on demand, from two inputs: the current
 //! [`LoadedImage`] (from [`ImageStore`]) and the current [`Document`]. The
-//! render is `LoadedImage::to_rgba()` → [`render_export`] → a PNG `Blob`.
+//! render is [`export_size_ok`] → `LoadedImage::to_rgba()` → [`render_export`]
+//! → a PNG `Blob`. The size check comes first, so an image the renderer would
+//! refuse (over 40 MP, or a side over the limit) gets the "too large" toast
+//! without its pixels ever being copied: wasm memory never shrinks, so a
+//! refused copy would cost its size for the rest of the session.
 //! Nothing is cached: `to_rgba` peaks at about three copies of the image, so
 //! holding a render between clicks would cost more than it saves.
 //!
@@ -50,7 +54,7 @@ use std::rc::Rc;
 
 use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
 use leptos::{ev, prelude::*, task::spawn_local};
-use paste2prompt_core::{Caption, Document, ImageSize, render_export};
+use paste2prompt_core::{Caption, Document, ImageSize, RenderError, export_size_ok, render_export};
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{JsFuture, future_to_promise};
 use web_sys::{Blob, BlobPropertyBag, Clipboard, ClipboardItem, HtmlAnchorElement, KeyboardEvent};
@@ -257,13 +261,16 @@ impl Exporter {
         image: LoadedImage,
         doc: Result<Document, String>,
     ) -> Result<Blob, String> {
+        let doc = doc?;
+        // Before `to_rgba`, so a refused image is never copied (#37).
+        export_size_ok(image.width(), image.height(), &doc).map_err(render_failed)?;
         self.busy.set(true);
         self.busy_label
             .set(rules::shows_busy_label(image.width(), image.height()));
         // Let the busy state paint before the synchronous render blocks the
         // main thread.
         after_next_paint().await;
-        let result = render_blob(&image, doc);
+        let result = render_blob(&image, &doc);
         self.busy.set(false);
         self.busy_label.set(false);
         result
@@ -410,15 +417,18 @@ pub fn ExportToolbar(exporter: Exporter) -> impl IntoView {
 }
 
 /// `image`'s pixels and `doc` → the export PNG as an `image/png` blob.
-fn render_blob(image: &LoadedImage, doc: Result<Document, String>) -> Result<Blob, String> {
-    let doc = doc?;
+fn render_blob(image: &LoadedImage, doc: &Document) -> Result<Blob, String> {
     let rgba = image
         .to_rgba()
         .map_err(|_| "Couldn't read the image's pixels.".to_owned())?;
-    let png =
-        render_export(&rgba, &doc).map_err(|e| format!("Couldn't render the export: {e}."))?;
+    let png = render_export(&rgba, doc).map_err(render_failed)?;
     drop(rgba);
     png_blob(&png).map_err(|_| "Couldn't create the PNG.".to_owned())
+}
+
+/// The toast for a render error, such as "too large".
+fn render_failed(e: RenderError) -> String {
+    format!("Couldn't render the export: {e}.")
 }
 
 fn png_blob(png: &[u8]) -> Result<Blob, JsValue> {
