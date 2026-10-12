@@ -45,11 +45,13 @@ mod history;
 mod op;
 mod render;
 
-pub use caption::{CAPTION_HEADER, Caption, CaptionLine, EditLine, caption_lines};
+pub use caption::{
+    ARROW, CAPTION_HEADER, Caption, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines,
+};
 pub use document::{Document, DocumentError, Edit, EditId, FORMAT_VERSION};
 pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};
-pub use op::{Anchor, Ghost, MirrorAxis, Op, OpError};
+pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};
 pub use render::{
     MAX_EXPORT_SIDE, MAX_IMAGE_PIXELS, MIN_EXPORT_WIDTH, RenderError, RgbaImage, mark_color,
     render_export,

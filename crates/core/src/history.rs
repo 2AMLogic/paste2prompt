@@ -11,14 +11,23 @@
 //!   emits many) becomes one step. [`Editor::cancel_gesture`] (`Esc`
 //!   mid-drag) reverts them instead. A gesture that ends where it started
 //!   leaves no step.
-//! - **Consecutive tweaks.** Outside a gesture, repeated updates to the *same*
-//!   target (one edit, or the instructions) merge into the latest step, so
-//!   typing a hint or the instructions is one step rather than one per key.
-//!   Anything else (an add, a delete, an update to a different target, undo,
-//!   redo, a gesture, or [`Editor::break_coalescing`]) closes that step.
+//! - **Typing.** Outside a gesture, only text typing coalesces: consecutive
+//!   [`Editor::set_hint`] calls on the *same* edit, or consecutive
+//!   [`Editor::set_instructions`] calls, merge into the latest step, so typing
+//!   is one step rather than one per key. Anything else (an add, a delete,
+//!   [`Editor::set_op`], [`Editor::set_region`], a hint on a different edit,
+//!   undo, redo, a gesture, or [`Editor::break_coalescing`]) closes that step.
+//!
+//! Outside a gesture, every [`Editor::set_op`] and [`Editor::set_region`] is
+//! its own step, so discrete actions such as pressing `M` to switch the mirror
+//! axis, or switching op kind, undo one press at a time.
 //!
 //! Any new change drops the redo stack. A change that alters nothing records
 //! nothing and keeps the redo stack.
+//!
+//! [`Editor::undo`] during an open gesture cancels the gesture (like
+//! [`Editor::cancel_gesture`]) instead of committing it, so the redo stack is
+//! kept and no earlier step is undone.
 
 use std::fmt;
 
@@ -35,14 +44,22 @@ enum Change {
     Instructions { before: String, after: String },
 }
 
+/// What a change updates, for merging changes within one step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Target {
     Edit(EditId),
     Instructions,
 }
 
+/// What an open step keeps absorbing outside a gesture: text typing only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Typing {
+    Hint(EditId),
+    Instructions,
+}
+
 impl Change {
-    /// The coalescing target, for updates only.
+    /// The merge target, for updates only.
     fn target(&self) -> Option<Target> {
         match self {
             Self::Update { after, .. } => Some(Target::Edit(after.id())),
@@ -107,8 +124,8 @@ impl Change {
 struct Step {
     changes: Vec<Change>,
     /// Only the newest undo step may be open; an open step absorbs the next
-    /// update to the same target.
-    open: bool,
+    /// typing change of the same kind.
+    open: Option<Typing>,
 }
 
 impl Step {
@@ -179,29 +196,38 @@ impl Editor {
         hint: Option<String>,
     ) -> Result<EditId, EditError> {
         op.validate()?;
-        let id = self.doc.alloc_id();
+        let id = self.doc.alloc_id().ok_or(EditError::IdsExhausted)?;
         let edit = Edit::new(id, region, op, hint);
         let index = self.doc.edits().len();
-        self.commit(Change::Insert { index, edit });
+        self.commit(Change::Insert { index, edit }, None);
         Ok(id)
     }
 
     /// Replaces an edit's source region (the `V`-tool drag, which re-picks
     /// the original pixels the edit refers to). The op is unchanged.
+    ///
+    /// Outside a gesture each call is its own undo step.
     pub fn set_region(&mut self, id: EditId, region: Region) -> Result<(), EditError> {
-        self.update(id, |e| *e.region_mut() = region)
+        self.update(id, None, |e| *e.region_mut() = region)
     }
 
     /// Replaces an edit's op, e.g. a translate's `dx`/`dy` while dragging the
     /// destination, or a different kind of op altogether.
+    ///
+    /// Outside a gesture each call is its own undo step (e.g. each `M` press).
     pub fn set_op(&mut self, id: EditId, op: Op) -> Result<(), EditError> {
         op.validate()?;
-        self.update(id, |e| *e.op_mut() = op)
+        self.update(id, None, |e| *e.op_mut() = op)
     }
 
     /// Sets or clears an edit's hint text. An empty string clears it.
+    ///
+    /// Outside a gesture, consecutive calls for the same edit are one undo
+    /// step (typing).
     pub fn set_hint(&mut self, id: EditId, hint: Option<String>) -> Result<(), EditError> {
-        self.update(id, |e| *e.hint_mut() = normalize_hint(hint))
+        self.update(id, Some(Typing::Hint(id)), |e| {
+            *e.hint_mut() = normalize_hint(hint);
+        })
     }
 
     /// Deletes an edit, returning it. Undo restores it at the same position
@@ -209,20 +235,25 @@ impl Editor {
     pub fn delete_edit(&mut self, id: EditId) -> Result<Edit, EditError> {
         let index = self.doc.index_of(id).ok_or(EditError::UnknownEdit(id))?;
         let edit = self.doc.edits()[index].clone();
-        self.commit(Change::Remove {
-            index,
-            edit: edit.clone(),
-        });
+        self.commit(
+            Change::Remove {
+                index,
+                edit: edit.clone(),
+            },
+            None,
+        );
         Ok(edit)
     }
 
     /// Replaces the image-level instructions.
+    ///
+    /// Outside a gesture, consecutive calls are one undo step (typing).
     pub fn set_instructions(&mut self, text: impl Into<String>) {
         let change = Change::Instructions {
             before: self.doc.instructions().to_owned(),
             after: text.into(),
         };
-        self.commit(change);
+        self.commit(change, Some(Typing::Instructions));
     }
 
     /// Starts a gesture: every change until [`end_gesture`](Self::end_gesture)
@@ -265,13 +296,17 @@ impl Editor {
     /// when a text field loses focus).
     pub fn break_coalescing(&mut self) {
         if let Some(top) = self.undo.last_mut() {
-            top.open = false;
+            top.open = None;
         }
     }
 
-    /// Whether [`undo`](Self::undo) would do anything.
+    /// Whether [`undo`](Self::undo) would do anything. During a gesture, that
+    /// is whether the gesture has changed anything.
     pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty() || self.gesture.as_ref().is_some_and(|g| !g.changes.is_empty())
+        match &self.gesture {
+            Some(g) => !g.changes.is_empty(),
+            None => !self.undo.is_empty(),
+        }
     }
 
     /// Whether [`redo`](Self::redo) would do anything.
@@ -281,17 +316,26 @@ impl Editor {
         !self.redo.is_empty() && self.gesture.as_ref().is_none_or(|g| g.changes.is_empty())
     }
 
-    /// Undoes the latest step, ending any open gesture first. Returns `false`
-    /// if there was nothing to undo.
+    /// Undoes the latest step. Returns `false` if there was nothing to undo.
+    ///
+    /// During an open gesture this cancels the gesture instead, exactly like
+    /// [`cancel_gesture`](Self::cancel_gesture): its changes are reverted, the
+    /// redo stack is kept, and no earlier step is undone (even when the
+    /// gesture has no net change). It returns whether the gesture had changed
+    /// anything.
     pub fn undo(&mut self) -> bool {
-        self.end_gesture();
+        if let Some(gesture) = &self.gesture {
+            let changed = !gesture.changes.is_empty();
+            self.cancel_gesture();
+            return changed;
+        }
         let Some(mut step) = self.undo.pop() else {
             return false;
         };
         for c in step.changes.iter().rev() {
             c.inverse().apply(&mut self.doc);
         }
-        step.open = false;
+        step.open = None;
         self.redo.push(step);
         self.break_coalescing();
         true
@@ -312,16 +356,23 @@ impl Editor {
         true
     }
 
-    fn update(&mut self, id: EditId, f: impl FnOnce(&mut Edit)) -> Result<(), EditError> {
+    fn update(
+        &mut self,
+        id: EditId,
+        typing: Option<Typing>,
+        f: impl FnOnce(&mut Edit),
+    ) -> Result<(), EditError> {
         let before = self.doc.edit(id).ok_or(EditError::UnknownEdit(id))?.clone();
         let mut after = before.clone();
         f(&mut after);
-        self.commit(Change::Update { before, after });
+        self.commit(Change::Update { before, after }, typing);
         Ok(())
     }
 
-    /// Applies `change` to the document and records it.
-    fn commit(&mut self, change: Change) {
+    /// Applies `change` to the document and records it. Outside a gesture, a
+    /// `typing` change merges into an open step of the same kind; anything
+    /// else (`None`) is a fresh step.
+    fn commit(&mut self, change: Change, typing: Option<Typing>) {
         if change.is_noop() {
             return;
         }
@@ -331,12 +382,10 @@ impl Editor {
             return;
         }
         self.redo.clear();
-        let target = change.target();
         if let Some(top) = self.undo.last_mut()
-            && top.open
-            && target.is_some()
+            && typing.is_some()
+            && top.open == typing
             && top.changes.len() == 1
-            && top.changes[0].target() == target
         {
             top.push_merged(change);
             if top.changes.is_empty() {
@@ -347,7 +396,7 @@ impl Editor {
         self.break_coalescing();
         self.undo.push(Step {
             changes: vec![change],
-            open: target.is_some(),
+            open: typing,
         });
     }
 }
@@ -359,6 +408,8 @@ pub enum EditError {
     UnknownEdit(EditId),
     /// The op's parameters are invalid.
     InvalidOp(OpError),
+    /// The document has used every edit id (2^53 of them) and can't add more.
+    IdsExhausted,
 }
 
 impl From<OpError> for EditError {
@@ -372,6 +423,7 @@ impl fmt::Display for EditError {
         match self {
             Self::UnknownEdit(id) => write!(f, "no edit with id {id}"),
             Self::InvalidOp(e) => write!(f, "invalid operation: {e}"),
+            Self::IdsExhausted => f.write_str("no edit ids left in this document"),
         }
     }
 }
@@ -380,7 +432,7 @@ impl std::error::Error for EditError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidOp(e) => Some(e),
-            Self::UnknownEdit(_) => None,
+            Self::UnknownEdit(_) | Self::IdsExhausted => None,
         }
     }
 }
@@ -389,6 +441,7 @@ impl std::error::Error for EditError {
 mod tests {
     use super::*;
     use crate::geometry::Point;
+    use crate::op::{Anchor, MirrorAxis};
 
     fn editor() -> Editor {
         Editor::new(ImageSize::new(800, 600).unwrap())
@@ -532,15 +585,66 @@ mod tests {
     }
 
     #[test]
-    fn undo_ends_open_gesture() {
+    fn undo_during_gesture_cancels_it() {
         let mut ed = editor();
         let a = ed.add_edit(region(0.1), translate(0.0), None).unwrap();
         ed.begin_gesture();
         ed.set_op(a, translate(0.3)).unwrap();
+        assert!(ed.can_undo());
         assert!(ed.undo());
         assert!(!ed.in_gesture());
         assert_eq!(*ed.document().edit(a).unwrap().op(), translate(0.0));
         assert_eq!(ids(&ed), [a]);
+        // The cancelled drag left no step: the next undo removes the add.
+        assert!(ed.undo());
+        assert!(ed.document().edits().is_empty());
+        assert!(!ed.undo());
+    }
+
+    #[test]
+    fn undo_during_gesture_keeps_redo() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.0), None).unwrap();
+        ed.set_instructions("x");
+        ed.undo();
+        assert!(ed.can_redo());
+        ed.begin_gesture();
+        ed.set_op(a, translate(0.3)).unwrap();
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(a).unwrap().op(), translate(0.0));
+        // The instructions change is still redoable, and redo doesn't bring
+        // the drag back.
+        assert!(ed.can_redo());
+        assert!(ed.redo());
+        assert_eq!(ed.document().instructions(), "x");
+        assert_eq!(*ed.document().edit(a).unwrap().op(), translate(0.0));
+        assert!(!ed.redo());
+    }
+
+    #[test]
+    fn undo_during_gesture_with_no_net_change_keeps_previous_step() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.0), None).unwrap();
+        ed.begin_gesture();
+        ed.set_region(a, region(0.4)).unwrap();
+        ed.set_region(a, region(0.1)).unwrap();
+        assert!(!ed.can_undo());
+        // Nothing to revert, and the add of the edit being dragged survives.
+        assert!(!ed.undo());
+        assert!(!ed.in_gesture());
+        assert_eq!(ids(&ed), [a]);
+
+        // Same for a gesture that hasn't changed anything yet.
+        ed.begin_gesture();
+        assert!(!ed.undo());
+        assert_eq!(ids(&ed), [a]);
+        assert!(ed.set_region(a, region(0.3)).is_ok());
+
+        // Outside a gesture, undo works as usual.
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(a).unwrap().region(), region(0.1));
+        assert!(ed.undo());
+        assert!(ed.document().edits().is_empty());
     }
 
     #[test]
@@ -554,6 +658,94 @@ mod tests {
         assert_eq!(ed.document().edit(a).unwrap().hint(), None);
         ed.undo();
         assert!(ed.document().edits().is_empty());
+    }
+
+    #[test]
+    fn hint_typing_then_op_change_undoes_only_the_op() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.1), None).unwrap();
+        for text in ["m", "make", "make it red"] {
+            ed.set_hint(a, Some(text.into())).unwrap();
+        }
+        let mirror = Op::Mirror {
+            axis: MirrorAxis::Horizontal,
+        };
+        ed.set_op(a, mirror).unwrap();
+
+        assert!(ed.undo());
+        let e = ed.document().edit(a).unwrap();
+        assert_eq!(*e.op(), translate(0.1));
+        assert_eq!(e.hint(), Some("make it red"));
+
+        // The typing is one step of its own.
+        assert!(ed.undo());
+        assert_eq!(ed.document().edit(a).unwrap().hint(), None);
+        assert!(ed.undo());
+        assert!(ed.document().edits().is_empty());
+    }
+
+    #[test]
+    fn op_change_then_hint_typing_are_separate_steps() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.1), None).unwrap();
+        ed.set_op(a, Op::Hint).unwrap();
+        ed.set_hint(a, Some("r".into())).unwrap();
+        ed.set_hint(a, Some("red".into())).unwrap();
+        assert!(ed.undo());
+        let e = ed.document().edit(a).unwrap();
+        assert_eq!(*e.op(), Op::Hint);
+        assert_eq!(e.hint(), None);
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(a).unwrap().op(), translate(0.1));
+    }
+
+    #[test]
+    fn each_mirror_toggle_is_its_own_step() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.1), None).unwrap();
+        // `M` three times: mirror horizontally, then switch axis twice.
+        let mut axis = MirrorAxis::Horizontal;
+        for _ in 0..3 {
+            ed.set_op(a, Op::Mirror { axis }).unwrap();
+            axis = axis.toggled();
+        }
+        let op = |ed: &Editor| *ed.document().edit(a).unwrap().op();
+        assert_eq!(
+            op(&ed),
+            Op::Mirror {
+                axis: MirrorAxis::Horizontal
+            }
+        );
+        assert!(ed.undo());
+        assert_eq!(
+            op(&ed),
+            Op::Mirror {
+                axis: MirrorAxis::Vertical
+            }
+        );
+        assert!(ed.undo());
+        assert_eq!(
+            op(&ed),
+            Op::Mirror {
+                axis: MirrorAxis::Horizontal
+            }
+        );
+        assert!(ed.undo());
+        assert_eq!(op(&ed), translate(0.1));
+        assert!(ed.undo());
+        assert!(ed.document().edits().is_empty());
+    }
+
+    #[test]
+    fn set_region_outside_gesture_is_one_step_each() {
+        let mut ed = editor();
+        let a = ed.add_edit(region(0.1), translate(0.1), None).unwrap();
+        ed.set_region(a, region(0.3)).unwrap();
+        ed.set_region(a, region(0.5)).unwrap();
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(a).unwrap().region(), region(0.3));
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(a).unwrap().region(), region(0.1));
     }
 
     #[test]
@@ -645,6 +837,53 @@ mod tests {
         ed.undo();
         assert_eq!(ids(&ed), [a]);
         assert!(ed.undo() && !ed.undo());
+    }
+
+    #[test]
+    fn out_of_range_anchor_is_rejected_by_editor() {
+        let mut ed = editor();
+        let off = Op::Rotate {
+            degrees: 15.0,
+            anchor: Anchor::Point(Point::new(-50.0, 9e9)),
+        };
+        assert_eq!(
+            ed.add_edit(region(0.1), off, None),
+            Err(EditError::InvalidOp(OpError::AnchorOutOfRange))
+        );
+        assert!(!ed.can_undo());
+        let a = ed.add_edit(region(0.1), translate(0.0), None).unwrap();
+        let off = Op::Scale {
+            sx: 2.0,
+            sy: 2.0,
+            anchor: Anchor::Point(Point::new(0.5, 1.2)),
+        };
+        assert_eq!(
+            ed.set_op(a, off),
+            Err(EditError::InvalidOp(OpError::AnchorOutOfRange))
+        );
+        assert_eq!(*ed.document().edit(a).unwrap().op(), translate(0.0));
+        // A clamped anchor is accepted.
+        let clamped = Op::Scale {
+            sx: 2.0,
+            sy: 2.0,
+            anchor: Anchor::Point(Point::new(0.5, 1.2).clamped()),
+        };
+        assert!(ed.set_op(a, clamped).is_ok());
+    }
+
+    #[test]
+    fn add_edit_reports_exhausted_ids_instead_of_overflowing() {
+        let json = editor().document().to_json().replacen(
+            r#""next_id":1"#,
+            r#""next_id":9007199254740992"#,
+            1,
+        );
+        let mut ed = Editor::from_document(Document::from_json(&json).unwrap());
+        assert_eq!(
+            ed.add_edit(region(0.1), Op::Hint, None),
+            Err(EditError::IdsExhausted)
+        );
+        assert!(ed.document().edits().is_empty() && !ed.can_undo());
     }
 
     #[test]
