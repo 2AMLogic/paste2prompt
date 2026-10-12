@@ -70,6 +70,24 @@ cargo test --workspace
 cargo deny check licenses   # needs cargo-deny; permissive licenses only
 ```
 
+## Deploy
+
+paste2prompt.com is a Cloudflare Workers static-assets site in the 2AM
+Logic account (`wrangler.jsonc`). Deploy from a clean checkout of `main`:
+
+```sh
+set -a; . ~/.cloudflare/2amlogic/paste2prompt-deploy.env; set +a
+npm ci
+npx --no-install wrangler deploy
+```
+
+`wrangler deploy` runs the build step: trunk, then `scripts/write_headers.py`,
+then the privacy guard. If the guard fails, nothing is uploaded. The token is
+`paste2prompt-deploy` in 2am's `infra/cloudflare/token-manifest.yml`.
+
+The zone keeps every script-injecting feature off: Rocket Loader, Web
+Analytics automatic setup, Zaraz. `www` redirects to the apex with a 301.
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE). Free for noncommercial use. For

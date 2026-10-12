@@ -57,7 +57,7 @@ pub use history::{EditError, Editor};
 pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};
 pub use render::{
     BadgePlacement, MAX_EXPORT_SIDE, MAX_IMAGE_PIXELS, MIN_EXPORT_WIDTH, PixelBox, RenderError,
-    RgbaImage, badge_position, badge_positions, export_size_ok, mark_color, render_export,
+    RgbaImage, badge_position, badge_positions, export_size_ok, mark_color, palette, render_export,
 };
 
 /// The product name, as shown in the UI and in the export caption header.

@@ -7,6 +7,8 @@
 //!   natively).
 //! - `view`: image-pixel / screen-pixel mapping.
 //! - `layout`: redraw triggers for size and device-pixel-ratio changes.
+//! - [`colors`]: per-edit colors from the export's palette, shared with
+//!   the history panel (tested natively).
 //! - `render`: Canvas2D drawing.
 //! - `source`: the drawable image (#9's `LoadedImage`, or a debug-only test
 //!   pattern).
@@ -29,6 +31,7 @@
 //!   image needs a confirmation" signal; a new `ImageStore::current()` value
 //!   starts a new session.
 
+pub mod colors;
 pub mod controller;
 pub mod geom;
 mod layout;
