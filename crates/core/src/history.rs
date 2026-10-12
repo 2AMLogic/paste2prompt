@@ -27,6 +27,9 @@
 //! [`Editor::move_edit`] is its own step, so discrete actions such as pressing `M` to switch the mirror
 //! axis, or switching op kind, undo one press at a time.
 //!
+//! [`Editor::clear_all`] (the **Clear edits** button) removes every edit and
+//! the instructions as one step.
+//!
 //! Any new change drops the redo stack. A change that alters nothing records
 //! nothing and keeps the redo stack.
 //!
@@ -377,6 +380,50 @@ impl Editor {
             after: text.into(),
         };
         self.commit(change, Some(Typing::Instructions));
+    }
+
+    /// Removes every edit and clears the instructions, as **one** undo step:
+    /// a single [`undo`](Self::undo) restores the document exactly (order,
+    /// ids, names, hints, ops and instructions). The image is kept, and ids
+    /// are not reused afterwards.
+    ///
+    /// Ends any open gesture first, recording it as its own step (like
+    /// [`redo`](Self::redo)). Returns `false`, recording nothing and keeping
+    /// the redo stack, when there was nothing to clear.
+    pub fn clear_all(&mut self) -> bool {
+        self.end_gesture();
+        let edits = self.doc.edits();
+        // Last to first, so each recorded index is valid when applied, and
+        // undo (which replays inverses in reverse) re-inserts first to last.
+        let mut changes: Vec<Change> = edits
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(index, edit)| Change::Remove {
+                index,
+                edit: edit.clone(),
+            })
+            .collect();
+        let instructions = Change::Instructions {
+            before: self.doc.instructions().to_owned(),
+            after: String::new(),
+        };
+        if !instructions.is_noop() {
+            changes.push(instructions);
+        }
+        if changes.is_empty() {
+            return false;
+        }
+        for c in &changes {
+            c.apply(&mut self.doc);
+        }
+        self.redo.clear();
+        self.break_coalescing();
+        self.undo.push(Step {
+            changes,
+            open: None,
+        });
+        true
     }
 
     /// Starts a gesture: every change until [`end_gesture`](Self::end_gesture)
@@ -1421,6 +1468,143 @@ mod tests {
         // Undo walks it all back.
         while ed.undo() {}
         assert!(ed.document().edits().is_empty());
+    }
+
+    /// An editor with three edits (one named, one with a hint, one moved),
+    /// instructions, and some history, returning the document it ends with.
+    fn busy() -> (Editor, Document) {
+        let (mut ed, [a, b, c, _]) = four();
+        ed.set_name(a, Some("logo".into())).unwrap();
+        ed.set_hint(b, Some("make it red".into())).unwrap();
+        ed.set_op(c, translate(0.2)).unwrap();
+        ed.move_edit(c, 0).unwrap();
+        ed.set_instructions("Overall: tighten");
+        let doc = ed.document().clone();
+        (ed, doc)
+    }
+
+    #[test]
+    fn clear_all_removes_edits_and_instructions() {
+        let (mut ed, _) = busy();
+        assert!(ed.clear_all());
+        assert!(ed.document().edits().is_empty());
+        assert_eq!(ed.document().instructions(), "");
+        assert!(ed.can_undo() && !ed.can_redo());
+    }
+
+    #[test]
+    fn clear_all_is_one_step_and_undo_redo_are_exact() {
+        let (mut ed, before) = busy();
+        ed.clear_all();
+        let cleared = ed.document().clone();
+
+        // One undo restores everything: order, ids, names, hints, ops and
+        // the instructions.
+        assert!(ed.undo());
+        assert_eq!(ed.document(), &before);
+        assert!(ed.redo());
+        assert_eq!(ed.document(), &cleared);
+        assert!(!ed.redo());
+        assert!(ed.undo());
+        assert_eq!(ed.document(), &before);
+
+        // The steps before it are untouched: next undo is the instructions.
+        assert!(ed.undo());
+        assert_eq!(ed.document().instructions(), "");
+        assert_eq!(ed.document().edits().len(), 4);
+    }
+
+    #[test]
+    fn clear_all_with_only_instructions_or_only_edits() {
+        let mut ed = editor();
+        ed.set_instructions("x");
+        assert!(ed.clear_all());
+        assert_eq!(ed.document().instructions(), "");
+        assert!(ed.undo());
+        assert_eq!(ed.document().instructions(), "x");
+
+        let (mut ed, [a, b, c, d]) = four();
+        assert!(ed.clear_all());
+        assert!(ed.document().edits().is_empty());
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), [a, b, c, d]);
+    }
+
+    #[test]
+    fn clear_all_on_empty_document_records_nothing_and_keeps_redo() {
+        let mut ed = editor();
+        assert!(!ed.clear_all());
+        assert!(!ed.can_undo());
+
+        // After undoing back to empty, a no-op clear keeps the redo stack.
+        let a = ed.add_edit(region(0.1), Op::Hint, None).unwrap();
+        ed.undo();
+        assert!(!ed.clear_all());
+        assert!(!ed.can_undo());
+        assert!(ed.can_redo());
+        assert!(ed.redo());
+        assert_eq!(ids(&ed), [a]);
+    }
+
+    #[test]
+    fn clear_all_drops_redo() {
+        let (mut ed, _) = busy();
+        ed.undo();
+        assert!(ed.can_redo());
+        ed.clear_all();
+        assert!(!ed.can_redo());
+    }
+
+    #[test]
+    fn clear_all_closes_typing_step() {
+        let mut ed = editor();
+        ed.set_instructions("one");
+        ed.clear_all();
+        // Typing after the clear is its own step, not merged into the
+        // clear or the earlier typing.
+        ed.set_instructions("two");
+        assert!(ed.undo());
+        assert_eq!(ed.document().instructions(), "");
+        assert!(ed.undo());
+        assert_eq!(ed.document().instructions(), "one");
+    }
+
+    #[test]
+    fn clear_all_ends_an_open_gesture_first() {
+        let (mut ed, [a, ..]) = four();
+        ed.begin_gesture();
+        ed.set_op(a, translate(0.3)).unwrap();
+        assert!(ed.clear_all());
+        assert!(!ed.in_gesture());
+        assert!(ed.document().edits().is_empty());
+        // The drag is its own step under the clear.
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(a).unwrap().op(), translate(0.3));
+        assert!(ed.undo());
+        assert_eq!(*ed.document().edit(a).unwrap().op(), Op::Hint);
+
+        // A gesture that changed nothing leaves no step of its own.
+        let (mut ed, ids4) = four();
+        ed.begin_gesture();
+        assert!(ed.clear_all());
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), ids4);
+        assert!(ed.undo());
+        assert_eq!(ids(&ed), ids4[..3]);
+
+        // On an empty document with an open, empty gesture: nothing at all.
+        let mut ed = editor();
+        ed.begin_gesture();
+        assert!(!ed.clear_all());
+        assert!(!ed.in_gesture() && !ed.can_undo());
+    }
+
+    #[test]
+    fn ids_stay_fresh_after_clear_all() {
+        let (mut ed, ids4) = four();
+        ed.clear_all();
+        let e = ed.add_edit(region(0.1), Op::Hint, None).unwrap();
+        assert!(!ids4.contains(&e));
     }
 
     #[test]
