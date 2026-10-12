@@ -19,3 +19,76 @@ h1 {
   height: auto;
   border: 1px dashed currentColor;
 }
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+header h1 {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+
+button.primary {
+  font-size: 1.05rem;
+  padding: 0.5rem 1.4rem;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-height: 50vh;
+  border: 2px dashed currentColor;
+  border-radius: 12px;
+  opacity: 0.85;
+  text-align: center;
+  padding: 1rem;
+}
+
+.empty-title {
+  font-size: 1.4rem;
+  margin: 0;
+}
+
+.empty-hint {
+  margin: 0;
+  opacity: 0.7;
+}
+
+.image-info {
+  margin: 0 0 0.5rem;
+}
+
+.notice:empty {
+  display: none;
+}
+
+/* Covers the window while files are dragged over it. pointer-events: none
+   keeps it from generating its own dragenter/dragleave events. */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: color-mix(in srgb, Canvas 75%, transparent);
+  border: 4px dashed Highlight;
+  font-size: 1.5rem;
+  z-index: 10;
+}
+
+.drop-overlay.visible {
+  display: flex;
+}
