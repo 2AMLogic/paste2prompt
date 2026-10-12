@@ -20,14 +20,10 @@
 //!
 //! - **Document (#10 canvas, #11 history):** [`Exporter::new`] takes a
 //!   [`DocumentSource`]: a non-reactive accessor that returns the current
-//!   document when an action runs. Until the canvas lands, `App` passes
-//!   [`DocumentSource::none`], and every export is the image plus the
-//!   header-only caption of an empty document. Once #10 is in, `App` passes
-//!   ```ignore
-//!   DocumentSource::new(move || {
-//!       canvas.controller.with_untracked(|c| c.editor().map(|e| e.document().clone()))
-//!   })
-//!   ```
+//!   document when an action runs. `App` passes the canvas editor's
+//!   document (`CanvasState::controller` → `Controller::editor`); when it
+//!   returns `None`, the export is the image plus the header-only caption of
+//!   an empty document.
 //!   A document whose image size doesn't match the current image is an
 //!   error (shown in the toast), never silently replaced.
 //! - **Keyboard (#13):** the three shortcuts are registered by a small local
@@ -81,11 +77,6 @@ impl DocumentSource {
     /// Read the document with `get`. Called once per action, untracked.
     pub fn new(get: impl Fn() -> Option<Document> + 'static) -> Self {
         Self(UnsyncCallback::new(move |()| get()))
-    }
-
-    /// No document yet: exports show the image and the header-only caption.
-    pub fn none() -> Self {
-        Self::new(|| None)
     }
 }
 
