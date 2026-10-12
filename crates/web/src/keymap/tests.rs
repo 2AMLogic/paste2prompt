@@ -611,11 +611,13 @@ const LATIN: &[LayoutCase] = &[
     ("ℓ", "KeyL", M::None, None, "letterlike ℓ"),
     ("\u{212A}", "KeyC", M::Ctrl, None, "Kelvin sign"),
     ("ⓜ", "KeyM", M::None, None, "circled ⓜ"),
-    ("⒨", "KeyM", M::None, None, "parenthesized ⒨"),
     ("🅜", "KeyM", M::None, None, "negative circled 🅜"),
     ("Ⅿ", "KeyM", M::None, None, "Roman numeral Ⅿ"),
     ("Ｍ", "KeyM", M::None, None, "fullwidth Ｍ"),
     ("𝐦", "KeyM", M::None, None, "mathematical bold 𝐦"),
+    // Not even alphabetic (General Category `So`), so these never fall back
+    // either.
+    ("⒨", "KeyM", M::None, None, "parenthesized ⒨"),
     ("™", "KeyT", M::None, None, "™"),
     // `?` is matched on the character, wherever the layout puts it.
     ("?", "Comma", M::Shift, Some(Action::ShowSheet), "AZERTY ?"),
@@ -745,8 +747,10 @@ fn only_non_latin_letters_fall_back_to_the_physical_key() {
         'ʰ',
         'ⱥ',
         'ꝋ',
+        'ꝋ',
         'ꬰ',
         '\u{10781}',
+        '\u{1DF00}',
         '\u{1DF00}',
         'ﬀ',
         'ᴍ',
@@ -772,6 +776,7 @@ fn only_non_latin_letters_fall_back_to_the_physical_key() {
     for c in [
         'ƒ',
         'ɔ',
+        'ʋ',
         'ʰ',
         'ⱥ',
         'ꬰ',

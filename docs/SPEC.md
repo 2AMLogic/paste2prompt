@@ -177,8 +177,8 @@ Ethiopic, Korean, Japanese kana…), the physical key decides instead
 letters outside ASCII (Turkish `ı`, BÉPO `è`, Ewe `ɔ`) and symbols (Linux
 AltGr's `µ`) never fall back to the physical key, and nothing fires with
 AltGr held. The non-Latin scripts are an allowlist of Unicode blocks, one
-for each script with a keyboard layout shipped by Windows, macOS or Linux,
-and only the letters in those blocks count. Many symbols are letters to
+for the common non-Latin scripts with OS keyboard layouts (an unlisted
+script simply gets no shortcut fallback), and only the letters in those blocks count. Many symbols are letters to
 Unicode (letterlike `ℓ`, circled `ⓜ`, Roman numeral `Ⅿ`, fullwidth `Ｍ`).
 A denylist of Latin blocks would let each one through. With the allowlist,
 a script nobody listed only leaves the shortcuts on that layout doing

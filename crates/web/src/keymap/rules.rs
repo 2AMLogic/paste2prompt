@@ -290,16 +290,16 @@ pub fn event_letter(key: &str, code: &str) -> Option<char> {
 ///
 /// The alternative, "alphabetic and not in a Latin block", would cover every
 /// non-Latin script, but `char::is_alphabetic` is also true for many things
-/// that are neither: letterlike symbols (`ℓ`, `K` U+212A), circled and
-/// parenthesized letters (`ⓜ`), Roman numerals (`Ⅿ`), fullwidth and
+/// that are neither: letterlike symbols (`ℓ`, `K` U+212A), circled letters
+/// (`ⓜ`), Roman numerals (`Ⅿ`), fullwidth and
 /// mathematical Latin (`Ｍ`, `𝐦`), small capitals and superscripts (`ᴍ`,
 /// `ᵐ`), and Latin blocks added in later Unicode versions (Latin
 /// Extended-F/G). A denylist lets each one fall back to the physical key
 /// unless someone remembered to list its block, and a slip fires the wrong
 /// shortcut. With an allowlist, a missing block only leaves the shortcuts on
-/// that layout doing nothing, which is safe. So this list names every
-/// non-Latin script with a keyboard layout shipped by Windows, macOS or
-/// Linux. Latin blocks are deliberately absent, as are symbol blocks.
+/// that layout doing nothing, which is safe. So this list names the common
+/// non-Latin scripts that OS keyboard layouts type; a script not listed
+/// simply gets no shortcut fallback. Latin blocks are deliberately absent, as are symbol blocks.
 const NON_LATIN_BLOCKS: &[(char, char)] = &[
     ('\u{0370}', '\u{03FF}'),   // Greek and Coptic
     ('\u{0400}', '\u{052F}'),   // Cyrillic, Cyrillic Supplement
