@@ -13,9 +13,10 @@ h1 {
   margin: 0 0 1rem;
 }
 
-/* Canvas view (#10). The canvas fills the panel; the image is fitted inside
-   it in Rust. touch-action: none hands touch and pen drags to Pointer Events
-   instead of scrolling the page. */
+/* Canvas view (#10). The stage's size is set from Rust (canvas/arrange.rs,
+   #69) through the CSSOM, to hug the image; there is no style attribute in
+   the markup (the CSP is style-src 'self'). touch-action: none hands touch
+   and pen drags to Pointer Events instead of scrolling the page. */
 .canvas-panel {
   display: flex;
   flex-direction: column;
@@ -28,9 +29,9 @@ h1 {
 
 .stage {
   display: block;
-  width: 100%;
-  height: calc(100vh - 17rem);
-  min-height: 320px;
+  box-sizing: content-box;
+  padding: 0;
+  margin-inline: auto;
   border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
   border-radius: 6px;
   background: color-mix(in srgb, Canvas 92%, CanvasText);
@@ -112,21 +113,36 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
-/* Canvas column (canvas + instructions) beside the history panel (#11);
-   the panel wraps below on narrow screens. */
+/* Canvas column (canvas + instructions) and the history panel (#11), beside
+   it (.side) or below it (.below), whichever shows the image larger
+   (canvas/arrange.rs, #69). The pixel sizes here are Chrome::DEFAULT in
+   arrange.rs: keep the two in step. */
 .workspace {
   display: flex;
-  flex-wrap: wrap;
   align-items: flex-start;
-  gap: 1rem;
+  gap: 16px;
 }
 
 .workspace-main {
-  flex: 1 1 32rem;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: min(20rem, 100%);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.workspace.side .history-panel {
+  flex: 1 1 300px;
+  min-width: 300px;
+}
+
+.workspace.below {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.workspace.below .history-panel {
+  max-width: none;
 }
 
 .instructions {
@@ -148,7 +164,6 @@ h1 {
 }
 
 .history-panel {
-  flex: 1 1 18rem;
   max-width: 28rem;
   display: flex;
   flex-direction: column;
