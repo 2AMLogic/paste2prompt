@@ -420,8 +420,16 @@ mod tests {
         }
         .ghost(&tri, square_image())
         .unwrap();
-        assert!(close(g.outline()[0], Point::new(0.4, 0.2)));
-        assert!(close(g.outline()[2], Point::new(0.4, 0.4)));
+        // The ghost is the lasso's flattened curve, reflected across the
+        // vertical line through its bounding-box center.
+        let c = tri.center();
+        let outline = tri.outline();
+        assert_eq!(g.outline().len(), outline.len());
+        for (got, p) in g.outline().iter().zip(&outline) {
+            assert!(close(*got, Point::new(2.0 * c.x - p.x, p.y)));
+        }
+        // The first control point is the outline's first point.
+        assert!(close(g.outline()[0], Point::new(2.0 * c.x - 0.2, 0.2)));
         assert_eq!(MirrorAxis::Horizontal.toggled(), MirrorAxis::Vertical);
     }
 
