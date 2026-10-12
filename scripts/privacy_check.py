@@ -20,7 +20,8 @@ fails closed instead of going unscanned.
 2. HTML: only top-level .html is allowed. Inline scripts (trunk's loader) use
    no network API, no URL attribute (src, href, srcset, poster, action, ...)
    names another origin, and there is no `<meta http-equiv="refresh">`. CSS
-   (any depth): no url() or @import names another origin. SVG (any depth,
+   (any depth) fails closed: no construct that can load a URL at all, not
+   even a same-origin one, and no backslash escape (CSS_RISKY). SVG (any depth,
    the favicon): only plain drawing elements, no event handlers, no href
    but a `#fragment`, no <style> or style attribute, no CSS-ish attribute
    value but a local url(#id), and text only in title/desc/text/tspan
@@ -288,7 +289,7 @@ DIST_NAMES = {"_headers"}
 # fill and stroke). No other attribute value may hold a backslash (a CSS
 # escape, so `\75rl(` is `url(`), `url(`, `image-set`, `@import` or
 # `expression(`, except a value that is exactly a local `url(#id)` (a
-# gradient, clip or mask). Text is allowed only inside <title>, <desc>,
+# gradient, clip or mask; CSS_RISKY, shared with check_css). Text is allowed only inside <title>, <desc>,
 # <text> and <tspan> (any other non-whitespace text is a finding, wherever
 # ElementTree keeps it: an element's .text or a child's .tail).
 SVG_NS = "{http://www.w3.org/2000/svg}"
@@ -300,7 +301,6 @@ SVG_ELEMENTS = {
 SVG_DECL = re.compile(r"<!(DOCTYPE|ENTITY|ELEMENT|ATTLIST)", re.IGNORECASE)
 SVG_PI = re.compile(r"<\?(?!xml\s)", re.IGNORECASE)
 SVG_TEXT_ELEMENTS = {"title", "desc", "text", "tspan"}
-SVG_CSSISH = re.compile(r"\\|url\s*\(|image-set|@import|expression\s*\(", re.IGNORECASE)
 SVG_LOCAL_URL = re.compile(r"\s*url\(#[A-Za-z_][A-Za-z0-9_.-]*\)\s*")
 
 # Properties of write_headers.py's CSP template (check 6 runs csp_problems on
@@ -330,7 +330,27 @@ CSP_REQUIRED = {
 EXTERNAL_URL = re.compile(r"^\s*(//|(?!(blob|data):)[a-z][a-z0-9+.-]*:)", re.IGNORECASE)
 URL_ATTRS = {"src", "href", "srcset", "poster", "action", "formaction", "data", "ping",
              "background", "manifest", "imagesrcset"}
-CSS_URL = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)|@import\s+(['\"])(.*?)\3", re.IGNORECASE)
+
+# CSS, wherever it appears in dist/ (a .css file, an SVG attribute value),
+# fails closed instead of being parsed (#62, #63): it may not contain any
+# construct that can make the browser load a URL, same-origin or not, nor a
+# backslash. The app's stylesheet needs none of these, and parsing CSS well
+# enough to allow some is where the old url()/@import regex was bypassed:
+#   - a backslash is a CSS escape, so `\75rl(` and `\0075rl(` are `url(`,
+#     and `@\69mport` is `@import`;
+#   - url( (any case, any whitespace), and src( (CSS Values 4 string URL);
+#   - image-set( / -webkit-image-set( and image(, whose plain strings are URLs;
+#   - @import with or without a space or quotes, @font-face (its src loads a
+#     font) and @namespace;
+#   - expression( (old IE script in CSS).
+# Comments are not stripped first: a `/*` inside a string would make a naive
+# stripper hide what follows, and none of these tokens may appear even in a
+# comment. A comment cannot split a token into a live one either (`ur/**/l(`
+# is the ident `ur` then the function `l(`).
+CSS_RISKY = re.compile(
+    r"\\|url\s*\(|src\s*\(|image-set|image\s*\(|@import|@font-face|@namespace|expression\s*\(",
+    re.IGNORECASE,
+)
 
 
 class Findings:
@@ -429,19 +449,18 @@ def check_html(path: Path, f: Findings) -> list[str]:
     return raw.scripts
 
 
+def css_risks(text: str) -> list[str]:
+    """Every CSS_RISKY token in CSS text, as written."""
+    return [m.group(0) for m in CSS_RISKY.finditer(text)]
+
+
 def check_css(path: Path, f: Findings) -> None:
-    for ref in _css_external(path.read_text(encoding="utf-8")):
-        f.add(str(path), f"CSS reference to another origin: {ref}")
-
-
-def _css_external(text: str) -> list[str]:
-    """url() and @import references in CSS text that name another origin."""
-    out = []
-    for m in CSS_URL.finditer(text):
-        url = m.group(2) if m.group(2) is not None else m.group(4)
-        if EXTERNAL_URL.match(url):
-            out.append(m.group(0)[:160])
-    return out
+    # Whole-text scan: a token may span lines (`url\n(`), so never line by line.
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    for m in CSS_RISKY.finditer(text):
+        lineno = text.count("\n", 0, m.start()) + 1
+        f.add(f"{path}:{lineno}", f"CSS construct that can load a URL ({m.group(0)!r}): {lines[lineno - 1].strip()[:160]}")
 
 
 def check_svg(path: Path, f: Findings) -> None:
@@ -478,7 +497,7 @@ def check_svg(path: Path, f: Findings) -> None:
                 f.add(where, f"SVG {key}={value[:80]!r} attribute is not allowed")
             if local == "href" and not value.strip().startswith("#"):
                 f.add(where, f"SVG {key}={value[:80]!r} is not a same-document #fragment")
-            if SVG_CSSISH.search(value) and not SVG_LOCAL_URL.fullmatch(value):
+            if css_risks(value) and not SVG_LOCAL_URL.fullmatch(value):
                 f.add(where, f"SVG attribute {key}={value[:80]!r} holds CSS that is not a local url(#id)")
         # Text directly in el, and text after each child (ElementTree keeps
         # that in the child's .tail, but it is el's content to a browser).
