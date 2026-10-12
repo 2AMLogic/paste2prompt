@@ -33,8 +33,8 @@ resolution. The canvas view is scaled; exports are not.
 
 | Op | Parameters | How it is set |
 |---|---|---|
-| Translate | dx, dy | Drag the region to where it should go |
-| Scale | factor (uniform, or x/y), anchor | Drag a corner handle; the anchor defaults to the region's center |
+| Translate | dx, dy | With translate active, drag from the region to where it should go. This sets the destination |
+| Scale | factor (uniform, or x/y), anchor | Drag a corner handle. The drag scales x and y independently; hold Shift to keep the aspect ratio (uniform). The anchor defaults to the region's center |
 | Mirror | axis (horizontal or vertical) | Toggle |
 | Rotate | degrees, anchor | Drag the rotation handle; Shift snaps to 15° |
 | Hint | free text | Text field |
@@ -58,6 +58,16 @@ change where a region goes, select the *edit* (`V`, or click its row in the
 history) and adjust its parameters. Don't stack a second edit on the moved
 copy.
 
+**Dragging with `V` versus dragging with translate.** The two drags do
+different things:
+
+- With `V`, you select an edit. Dragging its region moves the **source**
+  region on the original image, so the edit re-picks which original pixels
+  it refers to. The operation's parameters (such as a translate's dx/dy)
+  stay the same.
+- With the translate operation active, dragging sets the **destination**
+  (dx, dy). The source region stays where it is.
+
 ## Output
 
 ### Image layout
@@ -67,6 +77,8 @@ copy.
     badge.
   - Translate draws a ghost outline at the destination and an arrow to it.
   - Rotate and scale draw a ghost of the transformed outline.
+  - Mirror draws a ghost of the mirrored outline, plus a glyph on the
+    mirror axis.
 - **Bottom:** a caption band in a clearly separate color, with a fixed header:
   ```
   paste2prompt edit list (user-authored)
@@ -83,27 +95,35 @@ copy.
 
 | Action | Shortcut | Mechanism |
 |---|---|---|
-| **Copy image** | `⌘C` / `Ctrl+C` (when focus isn't in a text field) | `navigator.clipboard.write` with a `ClipboardItem` built **synchronously in the gesture handler**, its value a `Promise<Blob>` (required by Safari) |
+| **Copy image** | `⌘C` / `Ctrl+C`, only when focus isn't in a text field **and** there is no non-empty page text selection; otherwise the browser's normal copy applies | `navigator.clipboard.write` with a `ClipboardItem` built **synchronously in the gesture handler**, its value a `Promise<Blob>` (required by Safari) |
 | **Download PNG** | `⌘S` / `Ctrl+S` | `<a download="paste2prompt-<timestamp>.png">` holding a blob URL |
-| Copy caption as text | `⌘⌥C` / `Ctrl+Alt+C` | `navigator.clipboard.writeText`, for chats that accept text alongside the image |
+| Copy caption as text | `C` (only when focus isn't in a text field), plus a **Copy caption** button | `navigator.clipboard.writeText`, for chats that accept text alongside the image |
 
 If Copy image fails (browser without support, insecure context, permission
 denied), show a message and offer Download in its place.
 
-Also embed the edit list as JSON in a PNG `iTXt` chunk, so paste2prompt can
-reopen its own exports. Chat apps re-encode images, so the visible caption
-is what actually carries the instructions.
+The visible caption is what carries the instructions. Chat apps re-encode
+images, so no metadata survives them. Embedding the edit list in the PNG is
+not part of v1 (see Out of scope).
 
 ## Keyboard shortcuts
 
-Single-key tool shortcuts (as in Figma and Excalidraw) are disabled while a
-text field has focus. Avoid browser-reserved chords: `Ctrl/⌘+Shift+C`
-opens the inspector, `Ctrl/⌘+Shift+T` reopens a tab, and `Ctrl/⌘+W` / `T` / `N`
-can't be overridden at all.
+Single-key shortcuts (as in Figma and Excalidraw), including `C` for Copy
+caption, are disabled while a text field has focus. Avoid browser-reserved
+chords:
+
+- `⌘⇧C` / `Ctrl+Shift+C` opens the inspector.
+- `⌥⌘C` / `Ctrl+Alt+C`: on macOS, `⌥⌘C` opens DevTools (the element
+  inspector in Chrome and Firefox, and the JavaScript console in Safari
+  when the Develop menu is on). Avoid `Ctrl+Alt+C` too, since Ctrl+Alt is
+  AltGr on many European layouts.
+- `⌘⇧T` / `Ctrl+Shift+T` reopens a closed tab.
+- `⌘W` / `Ctrl+W` (close tab), `⌘T` / `Ctrl+T` (new tab) and `⌘N` / `Ctrl+N`
+  (new window) can't be overridden at all.
 
 | Key | Action |
 |---|---|
-| `V` | Select / move an existing edit's region |
+| `V` | Select an existing edit; dragging moves its source region on the original image |
 | `R` | Rectangle region tool |
 | `L` | Lasso region tool |
 | `T` | Operation: translate |
@@ -118,8 +138,8 @@ can't be overridden at all.
 | `⌘V` / `Ctrl+V` | Paste image |
 | `⌘O` / `Ctrl+O` | Open file |
 | `⌘S` / `Ctrl+S` | Download PNG |
-| `⌘C` / `Ctrl+C` | Copy image (outside text fields) |
-| `⌘⌥C` / `Ctrl+Alt+C` | Copy caption as text |
+| `⌘C` / `Ctrl+C` | Copy image (outside text fields, and only with no page text selected) |
+| `C` | Copy caption as text (also a button) |
 | `?` | Show the shortcut sheet |
 
 ## Architecture
@@ -128,8 +148,7 @@ can't be overridden at all.
   - the edit model, history, and undo/redo;
   - coordinate normalization;
   - caption text generation;
-  - export composition (rendering to RGBA, plus PNG encode with the
-    `iTXt` chunk).
+  - export composition (rendering to RGBA, plus PNG encode).
 
   Tested natively with `cargo test`.
 - **Web shell (`crates/web`)**: the canvas view, input handling, clipboard
@@ -145,6 +164,9 @@ can't be overridden at all.
   (Cloudflare Pages / Workers assets) at paste2prompt.com.
 - **Privacy:** no network requests after the page loads. CI checks this
   (no `fetch` / `XMLHttpRequest` in the bundle outside the asset loader).
+  That bundle scan can't see scripts injected at the edge, so edge-injected
+  scripts such as Cloudflare Web Analytics or Zaraz must stay disabled for
+  the site.
 
 ## Out of scope for v1
 
@@ -153,3 +175,9 @@ can't be overridden at all.
   instruction text).
 - Sending anything straight to an LLM API.
 - Browser extensions or a desktop build.
+- **Reopening exports (optional follow-up, later than v1).** A later
+  version may embed the edit list as JSON in a PNG `iTXt` chunk so that
+  paste2prompt can read it back. Only Download keeps that chunk reliably:
+  clipboard copies may re-encode the PNG and strip `iTXt`. The exported
+  pixels already have the marks and caption drawn in, so "reopen" would
+  restore the edit list as data, not a clean original.
