@@ -24,15 +24,33 @@ fn App() -> impl IntoView {
     let canvas = CanvasState::provide();
     let input = ImageInput::new(store, canvas.has_edits());
     let current = store.current();
-    // `?test-pattern` shows a generated image until a real one is loaded.
-    let test_pattern = canvas::test_pattern_requested()
-        .then(|| SourceImage::test_pattern(1280, 800).ok())
-        .flatten();
+    // Debug builds only: a generated test card, shown until a real image is
+    // loaded. Release builds compile this out.
+    #[cfg(debug_assertions)]
+    let test_pattern = RwSignal::new_local(None::<SourceImage>);
+    #[cfg(debug_assertions)]
+    let fallback = move || test_pattern.get();
+    #[cfg(not(debug_assertions))]
+    let fallback = || None;
     let image = Signal::derive_local(move || {
         current
             .with(|i| i.as_ref().map(SourceImage::from_loaded))
-            .or_else(|| test_pattern.clone())
+            .or_else(fallback)
     });
+    #[cfg(debug_assertions)]
+    let dev_tools = move || {
+        view! {
+            <button
+                type="button"
+                class="dev-test-pattern"
+                on:click=move |_| test_pattern.set(SourceImage::test_pattern(1280, 800).ok())
+            >
+                "Show test pattern (debug build)"
+            </button>
+        }
+    };
+    #[cfg(not(debug_assertions))]
+    let dev_tools = || ();
     let empty = move || image.with(Option::is_none);
 
     view! {
@@ -46,6 +64,7 @@ fn App() -> impl IntoView {
                     <p class="empty-title">"Paste, drop, or open an image"</p>
                     <p class="empty-hint">"⌘V / Ctrl+V to paste · ⌘O / Ctrl+O to open"</p>
                     <OpenButton input class="primary" />
+                    {dev_tools}
                 </section>
             </Show>
             <section class="canvas-panel" hidden=empty>

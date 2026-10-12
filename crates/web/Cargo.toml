@@ -36,7 +36,6 @@ features = [
     "ImageBitmap",
     "ImageData",
     "KeyboardEvent",
-    "Location",
     "MediaQueryList",
     "MouseEvent",
     "PointerEvent",

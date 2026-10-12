@@ -8,7 +8,8 @@
 //! - `view`: image-pixel / screen-pixel mapping.
 //! - `layout`: redraw triggers for size and device-pixel-ratio changes.
 //! - `render`: Canvas2D drawing.
-//! - `source`: the drawable image (#9's `LoadedImage`, or a test pattern).
+//! - `source`: the drawable image (#9's `LoadedImage`, or a debug-only test
+//!   pattern).
 //!
 //! # Integration points
 //!
@@ -42,7 +43,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, PointerEvent};
 
 pub use controller::{Controller, Cursor, OpKind, Pointer, Tool};
-pub use source::{SourceImage, test_pattern_requested};
+pub use source::SourceImage;
 use view::ViewTransform;
 
 /// Margin around the fitted image, in CSS pixels. Leaves room for badges

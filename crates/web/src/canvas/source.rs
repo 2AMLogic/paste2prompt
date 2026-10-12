@@ -6,19 +6,25 @@
 //! readers hold it) and never calls `LoadedImage::to_rgba`, which is the
 //! export's job.
 //!
-//! [`SourceImage::test_pattern`] is a generated test card for development
-//! and smoke tests, shown only when the URL has `?test-pattern` and no image
-//! is loaded (see [`test_pattern_requested`]). Nothing is fetched.
+//! Debug builds only: `SourceImage::test_pattern` is a generated test card
+//! for development and smoke tests, offered by a debug-only button in the
+//! empty state. It is compiled out of release builds (`debug_assertions`),
+//! and nothing reads the URL. Nothing is fetched.
 
 use paste2prompt_core::ImageSize;
 
 use crate::image::LoadedImage;
-use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageBitmap};
+#[cfg(debug_assertions)]
+use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
+#[cfg(debug_assertions)]
+use web_sys::HtmlCanvasElement;
+use web_sys::{CanvasRenderingContext2d, ImageBitmap};
 
 #[derive(Clone, Debug)]
 enum Drawable {
     Bitmap(ImageBitmap),
+    #[cfg(debug_assertions)]
     Canvas(HtmlCanvasElement),
 }
 
@@ -57,6 +63,7 @@ impl SourceImage {
     ) -> Result<(), JsValue> {
         match &self.drawable {
             Drawable::Bitmap(b) => ctx.draw_image_with_image_bitmap_and_dw_and_dh(b, x, y, w, h),
+            #[cfg(debug_assertions)]
             Drawable::Canvas(c) => {
                 ctx.draw_image_with_html_canvas_element_and_dw_and_dh(c, x, y, w, h)
             }
@@ -65,7 +72,8 @@ impl SourceImage {
 
     /// A generated test card (checkerboard, color blocks, a grid and a
     /// label), for development before image input exists. Nothing is
-    /// fetched: it is drawn into an offscreen canvas.
+    /// fetched: it is drawn into an offscreen canvas. Debug builds only.
+    #[cfg(debug_assertions)]
     pub fn test_pattern(width: u32, height: u32) -> Result<Self, JsValue> {
         let doc = web_sys::window()
             .and_then(|w| w.document())
@@ -112,16 +120,4 @@ impl SourceImage {
             drawable: Drawable::Canvas(canvas),
         })
     }
-}
-
-/// Whether to show the test pattern while no image is loaded: only when the
-/// URL has a `test-pattern` query parameter (`?test-pattern`).
-pub fn test_pattern_requested() -> bool {
-    web_sys::window()
-        .and_then(|w| w.location().search().ok())
-        .is_some_and(|q| {
-            q.trim_start_matches('?')
-                .split('&')
-                .any(|kv| kv.split('=').next() == Some("test-pattern"))
-        })
 }
