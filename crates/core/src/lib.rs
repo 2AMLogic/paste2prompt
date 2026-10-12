@@ -37,7 +37,9 @@ mod geometry;
 mod history;
 mod op;
 
-pub use caption::{CAPTION_HEADER, Caption, CaptionLine, EditLine, caption_lines};
+pub use caption::{
+    ARROW, CAPTION_HEADER, Caption, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines,
+};
 pub use document::{Document, DocumentError, Edit, EditId, FORMAT_VERSION};
 pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};

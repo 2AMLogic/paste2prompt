@@ -9,7 +9,7 @@
 //! paste2prompt edit list (user-authored)
 //! Coordinates are % of image width/height. Edits refer to the original image.
 //! #1  translate  region (12%,30%)-(40%,52%)                         →  move right 15%, up 4%
-//! #2  rotate     region (60%,10%)-(80%,25%)                         →  rotate 90° clockwise about center
+//! #2  rotate     region (60%,10%)-(80%,25%)                         →  rotate 90° clockwise about center (70%,18%)
 //! #3  hint       lasso around (50%,70%) within (40%,60%)-(60%,80%)  →  "make this button red"
 //! Overall: tighten the spacing between the cards
 //! ```
@@ -21,17 +21,25 @@
 //! Formatting rules:
 //! - Coordinates and offsets are whole percentages of image width (x) and
 //!   height (y); angles are whole degrees. Scale factors keep up to two
-//!   decimals.
+//!   decimals. A change too small to show at that precision reads "less
+//!   than 1%" (or "less than 1°"), never as a no-op.
 //! - A rectangle region is its top-left and bottom-right corners. A lasso
 //!   region is its centroid plus its bounding box, since a list of lasso
-//!   points means nothing to a reader.
+//!   points means nothing to a reader. A self-intersecting lasso, whose area
+//!   centroid can fall outside the shape, prints its bounding-box center.
+//! - Scale and rotate always print their pivot's position: `about center
+//!   (x%,y%)` for a rectangle, `about bounding-box center (x%,y%)` for a
+//!   lasso (so the pivot isn't confused with the printed centroid), or
+//!   `about point (x%,y%)`. A mirror names its axis line, e.g. `across x=30%`.
 //! - A rotation names its direction (clockwise or counter-clockwise) and is
 //!   reduced to the equivalent turn of at most 180°.
 //! - Hints are quoted, with runs of whitespace (including line breaks)
-//!   collapsed to one space so each edit stays on one line.
+//!   collapsed to one space so each edit stays on one line. Double quotes
+//!   inside a hint become single quotes.
 //! - Image-level instructions follow as `Overall: …` only when they contain
 //!   text. Each non-blank line of a multi-line instruction becomes its own
-//!   caption line, indented under the first.
+//!   caption line, indented under the first. Every Unicode line break (LF,
+//!   CR, VT, FF, NEL, U+2028, U+2029) splits lines.
 
 use std::fmt;
 
@@ -45,11 +53,18 @@ pub const CAPTION_HEADER: [&str; 2] = [
     "Coordinates are % of image width/height. Edits refer to the original image.",
 ];
 
-/// Prefix of the image-level instructions line.
-const OVERALL_PREFIX: &str = "Overall: ";
+/// Prefix of the image-level instructions line. A renderer laying out
+/// [`CaptionLine::Overall`] itself draws this before the text and indents
+/// [`CaptionLine::OverallContinued`] by its width.
+pub const OVERALL_PREFIX: &str = "Overall: ";
 
-/// Separator between the region column and the description column.
-const ARROW: &str = "→";
+/// Separator between an edit row's region column and its description column.
+pub const ARROW: &str = "→";
+
+/// The largest magnitude [`pct`] prints, in percent. [`Op::validate`] keeps
+/// stored offsets far below this; the clamp only makes sure no `f64` can
+/// overflow the formatting.
+const PCT_LIMIT: f64 = 1_000_000.0;
 
 /// One line of the caption block.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,19 +221,27 @@ fn continuation_indent() -> String {
     " ".repeat(OVERALL_PREFIX.chars().count())
 }
 
-/// The non-blank lines of the instructions, trimmed. `\r\n` and lone `\r`
-/// count as line breaks.
+/// Every character a clipboard target or text renderer may treat as a line
+/// break: LF, CR, VT, FF, NEL, and the Unicode line and paragraph separators.
+const LINE_BREAKS: [char; 7] = [
+    '\n', '\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}',
+];
+
+/// The non-blank lines of the instructions, trimmed. Any of [`LINE_BREAKS`]
+/// ends a line (so `\r\n` is one break plus an empty line, which is dropped).
 fn instruction_lines(text: &str) -> impl Iterator<Item = &str> {
-    text.split(['\n', '\r'])
+    text.split(LINE_BREAKS)
         .map(str::trim)
         .filter(|l| !l.is_empty())
 }
 
-/// A normalized value as a whole percentage. `-0` prints as `0`.
+/// A normalized value as a whole percentage, clamped to `±PCT_LIMIT` (NaN
+/// prints as `0`). `-0` prints as `0`.
 fn pct(v: f64) -> i64 {
-    // `as` saturates on out-of-range values; regions are within 0..=1 and
-    // ops are validated finite, so this never loses meaning in practice.
-    let r = (v * 100.0).round() as i64;
+    // Regions are within 0..=1 and ops are validated, so the clamp never
+    // bites in practice. It keeps the result far from `i64::MIN`, so callers
+    // can negate it or take its absolute value without overflow.
+    let r = (v * 100.0).round().clamp(-PCT_LIMIT, PCT_LIMIT) as i64;
     if r == 0 { 0 } else { r }
 }
 
@@ -246,6 +269,12 @@ fn describe_region(region: &Region) -> String {
 
 /// The area centroid of a lasso polygon (where its pixels are centered),
 /// which for a lopsided lasso differs from the bounding-box center.
+///
+/// Falls back to the bounding-box center when the signed-area formula gives
+/// a point that isn't finite or lies outside `bounds`. That happens for a
+/// self-intersecting lasso (a freehand figure-eight): its lobes' signed areas
+/// partly cancel, so the formula divides by a small net area and lands off
+/// the shape, even off the image.
 fn centroid(polygon: &Polygon, bounds: &Rect) -> Point {
     let pts = polygon.points();
     let n = pts.len();
@@ -263,7 +292,23 @@ fn centroid(polygon: &Polygon, bounds: &Rect) -> Point {
         // divide by ~zero.
         return bounds.center();
     }
-    Point::new(cx / (3.0 * a2), cy / (3.0 * a2))
+    let c = Point::new(cx / (3.0 * a2), cy / (3.0 * a2));
+    if within(c, bounds) {
+        c
+    } else {
+        bounds.center()
+    }
+}
+
+/// Whether `p` is finite and inside `r`, allowing for float error at the
+/// edges (a lasso's true centroid can't be outside its bounding box).
+fn within(p: Point, r: &Rect) -> bool {
+    const EPS: f64 = 1e-9;
+    let (min, max) = (r.min(), r.max());
+    p.x.is_finite()
+        && p.y.is_finite()
+        && (min.x - EPS..=max.x + EPS).contains(&p.x)
+        && (min.y - EPS..=max.y + EPS).contains(&p.y)
 }
 
 fn describe_edit(edit: &Edit) -> String {
@@ -271,34 +316,43 @@ fn describe_edit(edit: &Edit) -> String {
     match (edit.op(), hint) {
         (Op::Hint, Some(h)) => h,
         (Op::Hint, None) => "(no hint text)".to_owned(),
-        (op, Some(h)) => format!("{}; also {h}", describe_op(op)),
-        (op, None) => describe_op(op),
+        (op, Some(h)) => format!("{}; also {h}", describe_op(op, edit.region())),
+        (op, None) => describe_op(op, edit.region()),
     }
 }
 
-/// Quotes a hint, collapsing whitespace so it stays on one line.
+/// Quotes a hint, collapsing whitespace so it stays on one line. Double
+/// quotes inside the hint become single quotes, so the hint can't appear to
+/// end early and the closing quote is always the last one on the row.
 fn quote_hint(hint: &str) -> String {
     let words: Vec<&str> = hint.split_whitespace().collect();
-    format!("\"{}\"", words.join(" "))
+    format!("\"{}\"", words.join(" ").replace('"', "'"))
 }
 
-fn describe_op(op: &Op) -> String {
+fn describe_op(op: &Op, region: &Region) -> String {
     match *op {
         Op::Translate { dx, dy } => describe_translate(dx, dy),
-        Op::Scale { sx, sy, anchor } => {
-            let (x, y) = (factor(sx), factor(sy));
-            let amount = if x == y {
-                format!("×{x}")
-            } else {
-                format!("width ×{x}, height ×{y}")
-            };
-            format!("scale {amount} {}", about(anchor))
+        Op::Scale { sx, sy, anchor } => describe_scale(sx, sy, about(anchor, region)),
+        Op::Mirror { axis } => {
+            // The flip is about the bounding-box center (`Op::Mirror`); name
+            // the line so a lasso's printed centroid isn't taken for it.
+            let c = region.center();
+            match axis {
+                MirrorAxis::Horizontal => {
+                    format!(
+                        "mirror horizontally across x={}% (flip left to right)",
+                        pct(c.x)
+                    )
+                }
+                MirrorAxis::Vertical => {
+                    format!(
+                        "mirror vertically across y={}% (flip top to bottom)",
+                        pct(c.y)
+                    )
+                }
+            }
         }
-        Op::Mirror { axis } => match axis {
-            MirrorAxis::Horizontal => "mirror horizontally (flip left to right)".to_owned(),
-            MirrorAxis::Vertical => "mirror vertically (flip top to bottom)".to_owned(),
-        },
-        Op::Rotate { degrees, anchor } => describe_rotate(degrees, anchor),
+        Op::Rotate { degrees, anchor } => describe_rotate(degrees, &about(anchor, region)),
         Op::Hint => String::new(),
     }
 }
@@ -308,11 +362,11 @@ fn describe_translate(dx: f64, dy: f64) -> String {
     let mut parts = Vec::new();
     if x != 0 {
         let dir = if x > 0 { "right" } else { "left" };
-        parts.push(format!("{dir} {}%", x.abs()));
+        parts.push(format!("{dir} {}%", x.unsigned_abs()));
     }
     if y != 0 {
         let dir = if y > 0 { "down" } else { "up" };
-        parts.push(format!("{dir} {}%", y.abs()));
+        parts.push(format!("{dir} {}%", y.unsigned_abs()));
     }
     if parts.is_empty() {
         "move less than 1% (about in place)".to_owned()
@@ -321,7 +375,17 @@ fn describe_translate(dx: f64, dy: f64) -> String {
     }
 }
 
-fn describe_rotate(degrees: f64, anchor: Anchor) -> String {
+fn describe_scale(sx: f64, sy: f64, about: String) -> String {
+    let (x, y) = (factor(sx), factor(sy));
+    let amount = if x == y {
+        x.phrase()
+    } else {
+        format!("width {}, height {}", x.phrase(), y.phrase())
+    };
+    format!("scale {amount} {about}")
+}
+
+fn describe_rotate(degrees: f64, about: &str) -> String {
     // Reduce to the equivalent turn in (-180, 180], so a drag that wound past
     // a full turn reads as the turn the model should actually make.
     let mut d = degrees.rem_euclid(360.0);
@@ -329,7 +393,6 @@ fn describe_rotate(degrees: f64, anchor: Anchor) -> String {
         d -= 360.0;
     }
     let whole = d.round() as i64;
-    let about = about(anchor);
     match whole {
         0 => format!("rotate less than 1° {about}"),
         180 | -180 => format!("rotate 180° (half turn) {about}"),
@@ -338,23 +401,49 @@ fn describe_rotate(degrees: f64, anchor: Anchor) -> String {
     }
 }
 
-/// The pivot phrase for scale and rotate.
-fn about(anchor: Anchor) -> String {
-    match anchor {
-        Anchor::Center => "about center".to_owned(),
-        Anchor::Point(p) => format!("about point {}", point(p)),
+/// The pivot phrase for scale and rotate, with the pivot's position always
+/// printed. [`Anchor::Center`] is the region's bounding-box center; for a
+/// lasso that's named outright, since the row's printed point is the
+/// lasso's centroid, which is usually somewhere else.
+fn about(anchor: Anchor, region: &Region) -> String {
+    match (anchor, region) {
+        (Anchor::Point(p), _) => format!("about point {}", point(p)),
+        (Anchor::Center, Region::Rect(_)) => format!("about center {}", point(region.center())),
+        (Anchor::Center, Region::Polygon(_)) => {
+            format!("about bounding-box center {}", point(region.center()))
+        }
     }
 }
 
-/// A scale factor with up to two decimals and no trailing zeros (`1.5`, `2`,
-/// `0.75`).
-fn factor(v: f64) -> String {
+/// One axis of a scale, as printed.
+#[derive(Debug, PartialEq, Eq)]
+enum Factor {
+    /// The factor with up to two decimals and no trailing zeros (`1.5`, `2`,
+    /// `0.75`, `<0.01`). Exactly 1 prints as `1`.
+    Times(String),
+    /// Within half a percent of 1 but not exactly 1: `"larger"` or
+    /// `"smaller"`. Printing `×1` would read as a no-op, so this says "less
+    /// than 1% larger/smaller", like translate's and rotate's "less than".
+    Slight(&'static str),
+}
+
+impl Factor {
+    fn phrase(&self) -> String {
+        match self {
+            Self::Times(f) => format!("×{f}"),
+            Self::Slight(dir) => format!("less than 1% {dir}"),
+        }
+    }
+}
+
+fn factor(v: f64) -> Factor {
     let s = format!("{v:.2}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s == "0" {
-        "<0.01".to_owned()
-    } else {
-        s.to_owned()
+    match s {
+        "0" => Factor::Times("<0.01".to_owned()),
+        "1" if v > 1.0 => Factor::Slight("larger"),
+        "1" if v < 1.0 => Factor::Slight("smaller"),
+        s => Factor::Times(s.to_owned()),
     }
 }
 
@@ -431,7 +520,7 @@ mod tests {
         paste2prompt edit list (user-authored)
         Coordinates are % of image width/height. Edits refer to the original image.
         #1  translate  region (12%,30%)-(40%,52%)                         →  move right 15%, up 4%
-        #2  rotate     region (60%,10%)-(80%,25%)                         →  rotate 90° clockwise about center
+        #2  rotate     region (60%,10%)-(80%,25%)                         →  rotate 90° clockwise about center (70%,18%)
         #3  hint       lasso around (50%,70%) within (40%,60%)-(60%,80%)  →  "make this button red"
         Overall: tighten the spacing between the cards
         "#);
@@ -456,14 +545,14 @@ mod tests {
                 number: 1,
                 op: "mirror",
                 region: "region (10%,20%)-(30%,40%)".into(),
-                description: "mirror vertically (flip top to bottom)".into(),
+                description: "mirror vertically across y=30% (flip top to bottom)".into(),
             })
         );
         assert_eq!(lines[3], CaptionLine::Overall("one".into()));
         assert_eq!(lines[4], CaptionLine::OverallContinued("two".into()));
         assert_eq!(
             lines[2].text(),
-            "#1 mirror region (10%,20%)-(30%,40%) → mirror vertically (flip top to bottom)"
+            "#1 mirror region (10%,20%)-(30%,40%) → mirror vertically across y=30% (flip top to bottom)"
         );
         assert_eq!(lines[3].text(), "Overall: one");
         assert_eq!(lines[4].text(), "         two");
@@ -519,15 +608,15 @@ mod tests {
         #1   translate  region (20%,20%)-(40%,30%)  →  move left 20%
         #2   translate  region (20%,20%)-(40%,30%)  →  move down 33%
         #3   translate  region (20%,20%)-(40%,30%)  →  move less than 1% (about in place)
-        #4   scale      region (20%,20%)-(40%,30%)  →  scale ×1.5 about center
-        #5   scale      region (20%,20%)-(40%,30%)  →  scale ×2 about center
+        #4   scale      region (20%,20%)-(40%,30%)  →  scale ×1.5 about center (30%,25%)
+        #5   scale      region (20%,20%)-(40%,30%)  →  scale ×2 about center (30%,25%)
         #6   scale      region (20%,20%)-(40%,30%)  →  scale width ×1.25, height ×0.75 about point (10%,90%)
-        #7   mirror     region (20%,20%)-(40%,30%)  →  mirror horizontally (flip left to right)
-        #8   mirror     region (20%,20%)-(40%,30%)  →  mirror vertically (flip top to bottom)
-        #9   rotate     region (20%,20%)-(40%,30%)  →  rotate 15° clockwise about center
+        #7   mirror     region (20%,20%)-(40%,30%)  →  mirror horizontally across x=30% (flip left to right)
+        #8   mirror     region (20%,20%)-(40%,30%)  →  mirror vertically across y=25% (flip top to bottom)
+        #9   rotate     region (20%,20%)-(40%,30%)  →  rotate 15° clockwise about center (30%,25%)
         #10  rotate     region (20%,20%)-(40%,30%)  →  rotate 45° counter-clockwise about point (50%,50%)
-        #11  rotate     region (20%,20%)-(40%,30%)  →  rotate 90° counter-clockwise about center
-        #12  rotate     region (20%,20%)-(40%,30%)  →  rotate 180° (half turn) about center
+        #11  rotate     region (20%,20%)-(40%,30%)  →  rotate 90° counter-clockwise about center (30%,25%)
+        #12  rotate     region (20%,20%)-(40%,30%)  →  rotate 180° (half turn) about center (30%,25%)
         ");
     }
 
@@ -546,7 +635,7 @@ mod tests {
         insta::assert_snapshot!(text(&ed), @r"
         paste2prompt edit list (user-authored)
         Coordinates are % of image width/height. Edits refer to the original image.
-        #1  scale  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  scale ×0.5 about center
+        #1  scale  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  scale ×0.5 about bounding-box center (40%,25%)
         ");
     }
 
@@ -562,6 +651,219 @@ mod tests {
             describe_region(&sliver),
             "lasso around (30%,50%) within (10%,50%)-(50%,50%)"
         );
+    }
+
+    #[test]
+    fn figure_eight_lasso_centroid_stays_in_its_box() {
+        // Self-intersecting lassos (a bow tie / figure-eight) whose lobes
+        // nearly cancel. The raw signed-area centroid lands far left of the
+        // shape (at about -50% and -13310% of image width respectively),
+        // so the caption falls back to the bounding-box center.
+        let lopsided = [
+            Point::new(0.1, 0.1),
+            Point::new(0.3, 0.3),
+            Point::new(0.3, 0.1),
+            Point::new(0.1, 0.32),
+        ];
+        let near_cancel = [
+            Point::new(0.1, 0.1),
+            Point::new(0.3, 0.3),
+            Point::new(0.3, 0.1001),
+            Point::new(0.1, 0.3),
+        ];
+        for pts in [lopsided, near_cancel] {
+            let Region::Polygon(poly) = Region::polygon(pts).unwrap() else {
+                unreachable!()
+            };
+            let bounds = Region::Polygon(poly.clone()).bounds();
+            let c = centroid(&poly, &bounds);
+            assert!(within(c, &bounds), "{c:?} outside {bounds:?}");
+            assert_eq!(c, bounds.center());
+        }
+        let region = Region::polygon(lopsided).unwrap();
+        assert_eq!(
+            describe_region(&region),
+            "lasso around (20%,21%) within (10%,10%)-(30%,32%)"
+        );
+        let region = Region::polygon(near_cancel).unwrap();
+        assert_eq!(
+            describe_region(&region),
+            "lasso around (20%,20%) within (10%,10%)-(30%,30%)"
+        );
+    }
+
+    #[test]
+    fn huge_values_neither_overflow_nor_panic() {
+        // Op::validate now rejects these on load (translate within -1..=1),
+        // so build the ops directly: this is defense in depth for the text.
+        let r = rect_region(0.1, 0.1, 0.2, 0.2);
+        let translate = |dx, dy| describe_op(&Op::Translate { dx, dy }, &r);
+        assert_eq!(translate(-1e18, 0.0), "move left 1000000%");
+        assert_eq!(translate(0.0, 1e18), "move down 1000000%");
+        assert_eq!(
+            translate(f64::MIN, f64::MAX),
+            "move left 1000000%, down 1000000%"
+        );
+        assert_eq!(translate(f64::NAN, f64::NEG_INFINITY), "move up 1000000%");
+        assert_eq!(pct(f64::NAN), 0);
+        assert_eq!(pct(f64::INFINITY), 1_000_000);
+        assert_eq!(pct(f64::NEG_INFINITY), -1_000_000);
+        let anchor = Anchor::Point(Point::new(-1e300, 1e300));
+        assert_eq!(
+            describe_op(
+                &Op::Rotate {
+                    degrees: 1e300,
+                    anchor
+                },
+                &r
+            )
+            .split(" about ")
+            .nth(1),
+            Some("point (-1000000%,1000000%)")
+        );
+        assert!(describe_op(&Op::uniform_scale(1e300), &r).starts_with("scale ×1"));
+    }
+
+    #[test]
+    fn scale_near_one_is_not_a_no_op() {
+        let r = rect_region(0.2, 0.2, 0.4, 0.4);
+        let scale = |sx, sy| {
+            describe_op(
+                &Op::Scale {
+                    sx,
+                    sy,
+                    anchor: Anchor::Center,
+                },
+                &r,
+            )
+        };
+        assert_eq!(scale(1.0, 1.0), "scale ×1 about center (30%,30%)");
+        assert_eq!(
+            scale(1.004, 1.004),
+            "scale less than 1% larger about center (30%,30%)"
+        );
+        assert_eq!(
+            scale(0.996, 0.996),
+            "scale less than 1% smaller about center (30%,30%)"
+        );
+        // Non-uniform stays visible even when both axes round to 1.
+        assert_eq!(
+            scale(1.001, 0.999),
+            "scale width less than 1% larger, height less than 1% smaller about center (30%,30%)"
+        );
+        assert_eq!(
+            scale(1.5, 1.002),
+            "scale width ×1.5, height less than 1% larger about center (30%,30%)"
+        );
+        assert_eq!(
+            scale(1.0, 0.999),
+            "scale width ×1, height less than 1% smaller about center (30%,30%)"
+        );
+    }
+
+    #[test]
+    fn lasso_pivots_name_the_bounding_box_center() {
+        let mut ed = editor();
+        // Centroid (30%,20%); bounding-box center (40%,25%).
+        let tri = || {
+            Region::polygon([
+                Point::new(0.1, 0.1),
+                Point::new(0.7, 0.1),
+                Point::new(0.1, 0.4),
+            ])
+            .unwrap()
+        };
+        ed.add_edit(
+            tri(),
+            Op::Rotate {
+                degrees: 90.0,
+                anchor: Anchor::Center,
+            },
+            None,
+        )
+        .unwrap();
+        ed.add_edit(
+            tri(),
+            Op::Mirror {
+                axis: MirrorAxis::Horizontal,
+            },
+            None,
+        )
+        .unwrap();
+        ed.add_edit(
+            tri(),
+            Op::Mirror {
+                axis: MirrorAxis::Vertical,
+            },
+            None,
+        )
+        .unwrap();
+        ed.add_edit(
+            tri(),
+            Op::Scale {
+                sx: 2.0,
+                sy: 2.0,
+                anchor: Anchor::Point(Point::new(0.1, 0.1)),
+            },
+            None,
+        )
+        .unwrap();
+        insta::assert_snapshot!(text(&ed), @r"
+        paste2prompt edit list (user-authored)
+        Coordinates are % of image width/height. Edits refer to the original image.
+        #1  rotate  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  rotate 90° clockwise about bounding-box center (40%,25%)
+        #2  mirror  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  mirror horizontally across x=40% (flip left to right)
+        #3  mirror  lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  mirror vertically across y=25% (flip top to bottom)
+        #4  scale   lasso around (30%,20%) within (10%,10%)-(70%,40%)  →  scale ×2 about point (10%,10%)
+        ");
+    }
+
+    #[test]
+    fn hint_quotes_cannot_break_out() {
+        let r = rect_region(0.1, 0.1, 0.2, 0.2);
+        let mut ed = editor();
+        ed.add_edit(
+            r.clone(),
+            Op::Hint,
+            Some(r#"say "done" then"  #2 translate"#.into()),
+        )
+        .unwrap();
+        let Some(CaptionLine::Edit(e)) = caption_lines(ed.document()).pop() else {
+            panic!("expected an edit row")
+        };
+        assert_eq!(e.description, r#""say 'done' then' #2 translate""#);
+        assert_eq!(e.description.matches('"').count(), 2);
+    }
+
+    #[test]
+    fn instructions_split_on_every_unicode_line_break() {
+        let mut ed = editor();
+        ed.set_instructions(
+            "one\u{2028}two\u{2029}three\u{85}four\u{0B}five\u{0C}six\r\nseven\rlast",
+        );
+        let lines = caption_lines(ed.document());
+        assert_eq!(lines[2], CaptionLine::Overall("one".into()));
+        let rest: Vec<_> = lines[3..]
+            .iter()
+            .map(|l| match l {
+                CaptionLine::OverallContinued(t) => t.as_str(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            rest,
+            ["two", "three", "four", "five", "six", "seven", "last"]
+        );
+        let text = text(&ed);
+        assert!(!text.contains(&LINE_BREAKS[2..]));
+        assert_eq!(text.lines().count(), 2 + 8);
+    }
+
+    #[test]
+    fn public_layout_constants() {
+        assert_eq!(ARROW, "→");
+        assert_eq!(OVERALL_PREFIX, "Overall: ");
+        assert_eq!(continuation_indent().len(), OVERALL_PREFIX.len());
     }
 
     #[test]
@@ -600,8 +902,8 @@ mod tests {
         paste2prompt edit list (user-authored)
         Coordinates are % of image width/height. Edits refer to the original image.
         #1  translate  region (5%,5%)-(25%,15%)    →  move right 50%, down 10%; also "and make it blue"
-        #2  rotate     region (50%,50%)-(90%,90%)  →  rotate 30° counter-clockwise about center; also "keep the shadow under it"
-        #3  hint       region (30%,30%)-(35%,35%)  →  "replace with the word "Save""
+        #2  rotate     region (50%,50%)-(90%,90%)  →  rotate 30° counter-clockwise about center (70%,70%); also "keep the shadow under it"
+        #3  hint       region (30%,30%)-(35%,35%)  →  "replace with the word 'Save'"
         #4  hint       region (30%,60%)-(40%,70%)  →  (no hint text)
         #5  hint       region (0%,0%)-(100%,100%)  →  (no hint text)
         "#);
@@ -643,24 +945,25 @@ mod tests {
         assert_eq!(pct(0.125), 13);
         assert_eq!(pct(0.124), 12);
         assert_eq!(pct(-0.004), 0);
-        assert_eq!(factor(1.0), "1");
-        assert_eq!(factor(1.505), "1.5");
-        assert_eq!(factor(0.333), "0.33");
-        assert_eq!(factor(0.001), "<0.01");
+        let times = |s: &str| Factor::Times(s.to_owned());
+        assert_eq!(factor(1.0), times("1"));
+        assert_eq!(factor(1.505), times("1.5"));
+        assert_eq!(factor(0.333), times("0.33"));
+        assert_eq!(factor(0.001), times("<0.01"));
         assert_eq!(
-            describe_rotate(0.4, Anchor::Center),
+            describe_rotate(0.4, "about center"),
             "rotate less than 1° about center"
         );
         assert_eq!(
-            describe_rotate(89.6, Anchor::Center),
+            describe_rotate(89.6, "about center"),
             "rotate 90° clockwise about center"
         );
         assert_eq!(
-            describe_rotate(-450.0, Anchor::Center),
+            describe_rotate(-450.0, "about center"),
             "rotate 90° counter-clockwise about center"
         );
         assert_eq!(
-            describe_rotate(-180.0, Anchor::Center),
+            describe_rotate(-180.0, "about center"),
             "rotate 180° (half turn) about center"
         );
     }
