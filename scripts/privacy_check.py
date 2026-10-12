@@ -23,7 +23,12 @@ fails closed instead of going unscanned.
    inline CSS at all: any `<style>` element or `style` attribute is a finding
    (anywhere in the document, including inside <template>, <noscript> or an
    inline <svg>), matching the CSP's `style-src 'self'`, which blocks them in
-   a browser anyway. The app has none (trunk's index.html has none). CSS
+   a browser anyway. The app has none (trunk's index.html has none). No
+   comment, declaration or processing instruction either: every `<!` but the
+   doctype, and every `<?`, is a finding, found in the raw text before
+   parsing (html_declarations). html.parser on Python <= 3.12 does not end a
+   comment at `<!-->`, `<!--->` or `--!>` as browsers do, so markup after
+   one was never seen; this way no parser reads what the checks skip. CSS
    (any depth) fails closed: no construct that can load a URL at all, not
    even a same-origin one, and no backslash escape (CSS_RISKY). SVG (any depth,
    the favicon): only plain drawing elements, no event handlers, no href
@@ -365,6 +370,24 @@ class Findings:
         self.items.append(f"{where}: {what}")
 
 
+# #76: html.parser's idea of where a comment or `<!...>` ends differs from a
+# browser's, and between Python versions: 3.12 and older (CI's system
+# python3) read `<!-->`, `<!--->` and `--!>` as still inside a comment, and a
+# `<![CDATA[` as running to `]]>`, while a browser ends them early and
+# renders what follows. A comment inside <title>, <textarea> or (with
+# scripting on) <noscript> is text to a browser but a comment to the parser.
+# So the guard does not parse comments at all: any `<!` that is not the
+# doctype, and any `<?` (a bogus comment), anywhere in the raw text, is a
+# finding. trunk keeps index.html's own comments, so the source has none.
+HTML_DECLARATION = re.compile(r"<(?!!doctype html>)[!?]", re.IGNORECASE)
+
+
+def html_declarations(text: str) -> list[tuple[int, str]]:
+    """(line, text) of every `<!` but the doctype, and every `<?`, in HTML."""
+    return [(text.count("\n", 0, m.start()) + 1, text[m.start():m.start() + 40])
+            for m in HTML_DECLARATION.finditer(text)]
+
+
 def _attr_urls(key: str, value: str) -> list[str]:
     if key in ("srcset", "imagesrcset"):
         return [c.strip().split()[0] for c in value.split(",") if c.strip()]
@@ -452,6 +475,11 @@ def check_html(path: Path, f: Findings) -> list[str]:
     # parser that leaves character references alone; attributes are decoded.
     raw = InlineScripts(convert_charrefs=False)
     text = path.read_text(encoding="utf-8")
+    # Found in the raw text, not by the parser, so the result is the same on
+    # every Python version (#76). The page is still parsed for the rest.
+    for lineno, what in html_declarations(text):
+        f.add(f"{path}:{lineno}", f"comment, declaration or processing instruction {what!r}; "
+              "browsers and html.parser disagree on where it ends, so none is allowed")
     raw.feed(text)
     raw.close()
     decoded = InlineScripts(convert_charrefs=True)
