@@ -8,9 +8,16 @@ use crate::geometry::{ImageSize, Region};
 use crate::op::{Ghost, Op, OpError};
 
 /// Version of the JSON document format written by [`Document::to_json`].
-/// Bump it on any incompatible change; [`Document::from_json`] rejects other
-/// versions.
-pub const FORMAT_VERSION: u32 = 1;
+/// Bump it on any incompatible change. [`Document::from_json`] reads this
+/// version and every earlier one it still understands (v1, which had no
+/// names), and rejects the rest.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// The oldest format version [`Document::from_json`] still reads.
+const OLDEST_READABLE_VERSION: u32 = 1;
+
+/// The longest region name, in characters (after trimming).
+pub const MAX_NAME_CHARS: usize = 40;
 
 /// The largest `next_id` a document may hold: 2^53, the largest integer that
 /// survives a round trip through a JSON reader using `f64` numbers (e.g.
@@ -39,7 +46,8 @@ impl fmt::Display for EditId {
     }
 }
 
-/// One region-plus-operation pair, with optional hint text.
+/// One region-plus-operation pair, with optional hint text and an optional
+/// name.
 ///
 /// The region is always in original-image coordinates, and the op describes a
 /// change to those original pixels. Edits don't compose: edit #2 never sees
@@ -51,6 +59,7 @@ pub struct Edit {
     region: Region,
     op: Op,
     hint: Option<String>,
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,19 +68,125 @@ struct EditRepr {
     region: Region,
     op: Op,
     hint: Option<String>,
+    /// Absent in v1 documents.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// Why one stored edit was rejected on load.
+#[derive(Debug)]
+enum BadEdit {
+    Op(OpError),
+    Name(NameError),
+}
+
+impl fmt::Display for BadEdit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Op(e) => e.fmt(f),
+            Self::Name(e) => e.fmt(f),
+        }
+    }
 }
 
 impl TryFrom<EditRepr> for Edit {
-    type Error = OpError;
+    type Error = BadEdit;
     fn try_from(r: EditRepr) -> Result<Self, Self::Error> {
-        r.op.validate()?;
+        r.op.validate().map_err(BadEdit::Op)?;
+        let name = normalize_name(r.name).map_err(BadEdit::Name)?;
+        if r.op == Op::Label && name.is_none() {
+            return Err(BadEdit::Name(NameError::LabelNeedsName));
+        }
         Ok(Self {
             id: r.id,
             region: r.region,
             op: r.op,
             hint: normalize_hint(r.hint),
+            name,
         })
     }
+}
+
+/// Checks and normalizes a region name: surrounding whitespace is trimmed,
+/// and an empty name is no name. A name may have at most
+/// [`MAX_NAME_CHARS`] characters and no line break or other control
+/// character, so it always stays on its caption row; no invisible format
+/// character ([`is_format_char`]), which can't be drawn and can reorder the
+/// rest of a copied caption row; and it can't be only digits, which would
+/// read as a second badge number (`1 2`).
+pub(crate) fn normalize_name(name: Option<String>) -> Result<Option<String>, NameError> {
+    let Some(name) = name else { return Ok(None) };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
+        return Err(NameError::InvalidCharacter);
+    }
+    if trimmed.chars().any(is_format_char) {
+        return Err(NameError::InvisibleCharacter);
+    }
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_digit() || c.is_whitespace())
+    {
+        return Err(NameError::OnlyDigits);
+    }
+    if trimmed.chars().count() > MAX_NAME_CHARS {
+        return Err(NameError::TooLong);
+    }
+    Ok(Some(if trimmed.len() == name.len() {
+        name
+    } else {
+        trimmed.to_owned()
+    }))
+}
+
+/// Whether `c` is a Unicode format character (general category Cf): soft
+/// hyphen, zero-width space and joiners, bidi marks, embeddings, overrides
+/// and isolates (U+202E reverses the text after it), word joiner, BOM,
+/// interlinear annotation and tag characters, and the rest of the category
+/// as of Unicode 16. None of them draws a glyph of its own.
+pub(crate) fn is_format_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{AD}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61C}'
+            | '\u{6DD}'
+            | '\u{70F}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
+/// The form two names are compared in: case-insensitive, with whitespace
+/// runs collapsed and double quotes read as single quotes, exactly as the
+/// caption prints them. Two names that would print the same are the same
+/// name.
+fn name_key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('"', "'")
+        .to_lowercase()
 }
 
 /// An empty hint is the same as no hint.
@@ -86,6 +201,7 @@ impl Edit {
             region,
             op,
             hint: normalize_hint(hint),
+            name: None,
         }
     }
 
@@ -111,6 +227,14 @@ impl Edit {
         self.hint.as_deref()
     }
 
+    /// The region's name, so instructions and the model's reply can refer to
+    /// it ("put the logo next to the search box"). Any edit may have one; an
+    /// [`Op::Label`] edit always does. Never `Some("")`, never padded with
+    /// whitespace, and unique within its document, ignoring case.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
     /// The display-only ghost of this edit's result, or `None` for a hint.
     /// See [`Ghost`]: it is never a region and can't be edited further.
     pub fn ghost(&self, size: ImageSize) -> Option<Ghost> {
@@ -127,6 +251,10 @@ impl Edit {
 
     pub(crate) fn hint_mut(&mut self) -> &mut Option<String> {
         &mut self.hint
+    }
+
+    pub(crate) fn name_mut(&mut self) -> &mut Option<String> {
+        &mut self.name
     }
 }
 
@@ -145,7 +273,8 @@ pub struct Document {
     next_id: u64,
 }
 
-/// The on-disk shape. Field names and order are the stable v1 format.
+/// The on-disk shape. Field names and order are the stable format: v2 adds
+/// each edit's `name`, which v1 documents don't have.
 #[derive(Serialize, Deserialize)]
 struct DocumentRepr {
     version: u32,
@@ -170,7 +299,7 @@ impl From<Document> for DocumentRepr {
 impl TryFrom<DocumentRepr> for Document {
     type Error = DocumentError;
     fn try_from(r: DocumentRepr) -> Result<Self, Self::Error> {
-        if r.version != FORMAT_VERSION {
+        if !(OLDEST_READABLE_VERSION..=FORMAT_VERSION).contains(&r.version) {
             return Err(DocumentError::UnsupportedVersion(r.version));
         }
         if r.next_id > MAX_NEXT_ID {
@@ -180,6 +309,12 @@ impl TryFrom<DocumentRepr> for Document {
         for e in &r.edits {
             if e.id.0 >= r.next_id || !seen.insert(e.id) {
                 return Err(DocumentError::BadEditId(e.id));
+            }
+        }
+        let mut names = std::collections::HashSet::new();
+        for name in r.edits.iter().filter_map(Edit::name) {
+            if !names.insert(name_key(name)) {
+                return Err(DocumentError::DuplicateName(name.to_owned()));
             }
         }
         Ok(Self {
@@ -232,14 +367,35 @@ impl Document {
         &self.instructions
     }
 
-    /// Serializes to the v1 JSON format. Not embedded in exports in v1 (spec
-    /// §Out of scope), but kept stable for a later `iTXt` follow-up.
+    /// The edit named `name`, compared as names are (ignoring case and
+    /// quote style), other than `except`.
+    pub fn edit_named(&self, name: &str, except: Option<EditId>) -> Option<&Edit> {
+        let key = name_key(name);
+        self.edits
+            .iter()
+            .filter(|e| Some(e.id) != except)
+            .find(|e| e.name().is_some_and(|n| name_key(n) == key))
+    }
+
+    /// A name no edit has yet, for a new [`Op::Label`] edit: `label 1`,
+    /// `label 2`, and so on.
+    pub fn unused_label_name(&self) -> String {
+        (1..)
+            .map(|n| format!("label {n}"))
+            .find(|name| self.edit_named(name, None).is_none())
+            .expect("an unbounded range has a free name")
+    }
+
+    /// Serializes to the JSON format ([`FORMAT_VERSION`]). Not embedded in
+    /// exports in v1 (spec §Out of scope), but kept stable for a later
+    /// `iTXt` follow-up.
     pub fn to_json(&self) -> String {
         // Infallible: every field is a plain struct, string or finite number.
         serde_json::to_string(self).expect("Document serializes to JSON")
     }
 
-    /// Parses the JSON format, validating every region, op and id.
+    /// Parses the JSON format, this version or an older one still read (v1
+    /// has no names), validating every region, op, name and id.
     pub fn from_json(json: &str) -> Result<Self, DocumentError> {
         // Parse the repr first so version and id errors keep their own
         // variants instead of being folded into a serde message.
@@ -270,13 +426,50 @@ impl Document {
     }
 }
 
+/// Why a region name was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameError {
+    /// Longer than [`MAX_NAME_CHARS`] characters.
+    TooLong,
+    /// Contains a line break or another control character.
+    InvalidCharacter,
+    /// Contains an invisible format character (zero-width or bidi control).
+    InvisibleCharacter,
+    /// Only digits, which would read as an edit number.
+    OnlyDigits,
+    /// Another edit in the document already has this name, ignoring case.
+    Duplicate,
+    /// An [`Op::Label`] edit with no name: a label is only its name.
+    LabelNeedsName,
+}
+
+impl fmt::Display for NameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLong => write!(f, "a name can be at most {MAX_NAME_CHARS} characters"),
+            Self::InvalidCharacter => f.write_str("a name can't contain a line break"),
+            Self::InvisibleCharacter => {
+                f.write_str("a name can't contain an invisible formatting character")
+            }
+            Self::OnlyDigits => f.write_str("a name can't be only digits"),
+            Self::Duplicate => f.write_str("another region already has this name"),
+            Self::LabelNeedsName => f.write_str("a label needs a name"),
+        }
+    }
+}
+
+impl std::error::Error for NameError {}
+
 /// Why a JSON document was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentError {
-    /// Malformed JSON, or a region, op or size that failed validation.
+    /// Malformed JSON, or a region, op, name or size that failed validation.
     Json(String),
-    /// The `version` field is not [`FORMAT_VERSION`].
+    /// The `version` field is newer than [`FORMAT_VERSION`] or older than
+    /// any version still read.
     UnsupportedVersion(u32),
+    /// Two edits have the same name, ignoring case.
+    DuplicateName(String),
     /// An edit id is duplicated or not below `next_id`.
     BadEditId(EditId),
     /// `next_id` is above 2^53, the largest id counter a document may hold.
@@ -288,6 +481,7 @@ impl fmt::Display for DocumentError {
         match self {
             Self::Json(e) => write!(f, "invalid document JSON: {e}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported document version {v}"),
+            Self::DuplicateName(n) => write!(f, "two regions are named {n:?}"),
             Self::BadEditId(id) => write!(f, "duplicate or out-of-range edit id {id}"),
             Self::BadNextId(n) => write!(f, "next_id {n} is above the maximum 2^53"),
         }
@@ -336,8 +530,21 @@ mod tests {
                 .unwrap()
             };
             let hint = (i != 2).then(|| format!("hint {i} with \"quotes\" and ünïcode"));
-            d.edits.push(Edit::new(id, region, op, hint));
+            let mut edit = Edit::new(id, region, op, hint);
+            if i == 1 {
+                *edit.name_mut() = Some("the \"logo\" ünï".into());
+            }
+            d.edits.push(edit);
         }
+        let id = d.alloc_id().unwrap();
+        let mut label = Edit::new(
+            id,
+            Region::rect(Point::new(0.0, 0.0), Point::new(1.0, 0.08)).unwrap(),
+            Op::Label,
+            None,
+        );
+        *label.name_mut() = Some("nav bar".into());
+        d.edits.push(label);
         d.instructions = "tighten the spacing\nbetween the cards".into();
         d
     }
@@ -352,28 +559,30 @@ mod tests {
         assert_eq!(back.to_json(), json);
     }
 
-    /// Pins the exact v1 format for every region kind, op kind, anchor form,
-    /// mirror axis and hint form. Renaming a field or variant breaks this even
-    /// though it would still round-trip.
+    /// Pins the exact v2 format for every region kind, op kind, anchor form,
+    /// mirror axis, hint form and name form. Renaming a field or variant
+    /// breaks this even though it would still round-trip.
     #[test]
     fn json_shape_of_sample_is_pinned() {
         assert_eq!(
             sample().to_json(),
             concat!(
-                r#"{"version":1,"image_size":{"width":1280,"height":720},"next_id":6,"edits":["#,
+                r#"{"version":2,"image_size":{"width":1280,"height":720},"next_id":7,"edits":["#,
                 r#"{"id":1,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
                 r#""op":{"kind":"translate","dx":0.15,"dy":-0.04},"#,
-                r#""hint":"hint 0 with \"quotes\" and ünïcode"},"#,
+                r#""hint":"hint 0 with \"quotes\" and ünïcode","name":null},"#,
                 r#"{"id":2,"region":{"kind":"polygon","points":[{"x":0.1,"y":0.1},{"x":0.7,"y":0.2},{"x":0.3,"y":0.6}]},"#,
                 r#""op":{"kind":"scale","sx":1.5,"sy":0.75,"anchor":{"point":{"x":0.1,"y":0.9}}},"#,
-                r#""hint":"hint 1 with \"quotes\" and ünïcode"},"#,
+                r#""hint":"hint 1 with \"quotes\" and ünïcode","name":"the \"logo\" ünï"},"#,
                 r#"{"id":3,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
-                r#""op":{"kind":"mirror","axis":"vertical"},"hint":null},"#,
+                r#""op":{"kind":"mirror","axis":"vertical"},"hint":null,"name":null},"#,
                 r#"{"id":4,"region":{"kind":"polygon","points":[{"x":0.1,"y":0.1},{"x":0.7,"y":0.2},{"x":0.3,"y":0.6}]},"#,
                 r#""op":{"kind":"rotate","degrees":0.3333333333333333,"anchor":"center"},"#,
-                r#""hint":"hint 3 with \"quotes\" and ünïcode"},"#,
+                r#""hint":"hint 3 with \"quotes\" and ünïcode","name":null},"#,
                 r#"{"id":5,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
-                r#""op":{"kind":"hint"},"hint":"hint 4 with \"quotes\" and ünïcode"}],"#,
+                r#""op":{"kind":"hint"},"hint":"hint 4 with \"quotes\" and ünïcode","name":null},"#,
+                r#"{"id":6,"region":{"kind":"rect","min":{"x":0.0,"y":0.0},"max":{"x":1.0,"y":0.08}},"#,
+                r#""op":{"kind":"label"},"hint":null,"name":"nav bar"}],"#,
                 r#""instructions":"tighten the spacing\nbetween the cards"}"#,
             )
         );
@@ -397,19 +606,21 @@ mod tests {
         ));
         assert_eq!(
             d.to_json(),
-            r#"{"version":1,"image_size":{"width":10,"height":20},"next_id":2,"edits":[{"id":1,"region":{"kind":"rect","min":{"x":0.0,"y":0.0},"max":{"x":0.5,"y":0.25}},"op":{"kind":"translate","dx":0.5,"dy":0.0},"hint":null}],"instructions":""}"#
+            r#"{"version":2,"image_size":{"width":10,"height":20},"next_id":2,"edits":[{"id":1,"region":{"kind":"rect","min":{"x":0.0,"y":0.0},"max":{"x":0.5,"y":0.25}},"op":{"kind":"translate","dx":0.5,"dy":0.0},"hint":null,"name":null}],"instructions":""}"#
         );
     }
 
     #[test]
     fn from_json_rejects_bad_documents() {
         let good = sample().to_json();
-        let v2 = good.replacen(r#""version":1"#, r#""version":2"#, 1);
-        assert_eq!(
-            Document::from_json(&v2),
-            Err(DocumentError::UnsupportedVersion(2))
-        );
-        let low_next = good.replacen(r#""next_id":6"#, r#""next_id":3"#, 1);
+        for v in [0, 3] {
+            let json = good.replacen(r#""version":2"#, &format!(r#""version":{v}"#), 1);
+            assert_eq!(
+                Document::from_json(&json),
+                Err(DocumentError::UnsupportedVersion(v))
+            );
+        }
+        let low_next = good.replacen(r#""next_id":7"#, r#""next_id":3"#, 1);
         assert!(matches!(
             Document::from_json(&low_next),
             Err(DocumentError::BadEditId(_))
@@ -447,7 +658,7 @@ mod tests {
             ));
         }
         // An id counter that would overflow is rejected, not panicked on.
-        let huge = good.replacen(r#""next_id":6"#, r#""next_id":18446744073709551615"#, 1);
+        let huge = good.replacen(r#""next_id":7"#, r#""next_id":18446744073709551615"#, 1);
         assert_eq!(
             Document::from_json(&huge),
             Err(DocumentError::BadNextId(u64::MAX))
@@ -457,7 +668,7 @@ mod tests {
     #[test]
     fn ids_never_overflow_or_repeat() {
         let at_max = sample().to_json().replacen(
-            r#""next_id":6"#,
+            r#""next_id":7"#,
             &format!(r#""next_id":{MAX_NEXT_ID}"#),
             1,
         );
@@ -466,7 +677,7 @@ mod tests {
         assert_eq!(d.alloc_id(), None);
 
         let below = sample().to_json().replacen(
-            r#""next_id":6"#,
+            r#""next_id":7"#,
             &format!(r#""next_id":{}"#, MAX_NEXT_ID - 1),
             1,
         );
@@ -491,5 +702,141 @@ mod tests {
         let back = Document::from_json(&json).unwrap();
         assert_eq!(back.edits()[0].hint(), None);
         assert_eq!(back.number_of(e.id()), Some(1));
+    }
+
+    /// A document saved by v1 (format version 1, no `name` fields).
+    const V1_JSON: &str = concat!(
+        r#"{"version":1,"image_size":{"width":10,"height":20},"next_id":3,"edits":["#,
+        r#"{"id":1,"region":{"kind":"rect","min":{"x":0.0,"y":0.0},"max":{"x":0.5,"y":0.25}},"#,
+        r#""op":{"kind":"translate","dx":0.5,"dy":0.0},"hint":null},"#,
+        r#"{"id":2,"region":{"kind":"rect","min":{"x":0.5,"y":0.5},"max":{"x":1.0,"y":1.0}},"#,
+        r#""op":{"kind":"hint"},"hint":"red"}],"instructions":"x"}"#,
+    );
+
+    #[test]
+    fn v1_documents_load_and_save_as_v2() {
+        let d = Document::from_json(V1_JSON).unwrap();
+        assert_eq!(d.edits().len(), 2);
+        assert!(d.edits().iter().all(|e| e.name().is_none()));
+        assert_eq!(d.edits()[1].hint(), Some("red"));
+        assert_eq!(d.instructions(), "x");
+        let json = d.to_json();
+        assert!(json.starts_with(r#"{"version":2,"#), "{json}");
+        assert_eq!(Document::from_json(&json).unwrap(), d);
+    }
+
+    #[test]
+    fn names_are_validated_on_load() {
+        let good = sample().to_json();
+        let named = |name: &str| {
+            good.replacen(
+                r#""name":"nav bar""#,
+                &format!(r#""name":{}"#, serde_json::to_string(name).unwrap()),
+                1,
+            )
+        };
+        // Trimmed on load.
+        let d = Document::from_json(&named("  nav bar \t")).unwrap();
+        assert_eq!(d.edits()[5].name(), Some("nav bar"));
+        // A label must keep a name: blank or null is rejected.
+        for json in [
+            named("   "),
+            good.replacen(r#""name":"nav bar""#, r#""name":null"#, 1),
+        ] {
+            assert!(matches!(
+                Document::from_json(&json),
+                Err(DocumentError::Json(_))
+            ));
+        }
+        // Too long, with a line break or a bidi override, or only digits.
+        for bad in [
+            "x".repeat(MAX_NAME_CHARS + 1),
+            "nav\nbar".into(),
+            "a\u{2028}b".into(),
+            "nav\u{202E}rab".into(),
+            "a\u{200B}b".into(),
+            "42".into(),
+        ] {
+            assert!(matches!(
+                Document::from_json(&named(&bad)),
+                Err(DocumentError::Json(_))
+            ));
+        }
+        assert!(Document::from_json(&named(&"é".repeat(MAX_NAME_CHARS))).is_ok());
+        // Unique, ignoring case and quote style.
+        for dup in ["THE \"LOGO\" ÜNÏ", "the 'logo'   ünï"] {
+            assert_eq!(
+                Document::from_json(&named(dup)),
+                Err(DocumentError::DuplicateName(dup.to_owned()))
+            );
+        }
+    }
+
+    #[test]
+    fn name_normalization() {
+        assert_eq!(normalize_name(None), Ok(None));
+        assert_eq!(normalize_name(Some(" \t ".into())), Ok(None));
+        assert_eq!(
+            normalize_name(Some(" logo ".into())),
+            Ok(Some("logo".into()))
+        );
+        assert_eq!(
+            normalize_name(Some("x".repeat(41))),
+            Err(NameError::TooLong)
+        );
+        assert_eq!(
+            normalize_name(Some(format!("  {}  ", "x".repeat(40)))),
+            Ok(Some("x".repeat(40)))
+        );
+        for bad in ["a\nb", "a\rb", "a\u{85}b", "a\u{2029}b", "a\tb"] {
+            assert_eq!(
+                normalize_name(Some(bad.into())),
+                Err(NameError::InvalidCharacter),
+                "{bad:?}"
+            );
+        }
+        // Invisible format characters (Cf): zero-width, bidi controls, BOM.
+        for bad in [
+            "a\u{200B}b",
+            "a\u{200D}b",
+            "a\u{200F}b",
+            "\u{202E}logo",
+            "a\u{2066}b\u{2069}",
+            "\u{FEFF}logo",
+            "a\u{AD}b",
+            "a\u{E0041}b",
+        ] {
+            assert_eq!(
+                normalize_name(Some(bad.into())),
+                Err(NameError::InvisibleCharacter),
+                "{bad:?}"
+            );
+        }
+        // Digits only would read as a second number: `1 2`.
+        for bad in ["2", "12", " 007 ", "1 2"] {
+            assert_eq!(
+                normalize_name(Some(bad.into())),
+                Err(NameError::OnlyDigits),
+                "{bad:?}"
+            );
+        }
+        for ok in ["2nd card", "card 2", "#2", "\u{0662}", "Größe"] {
+            assert!(normalize_name(Some(ok.into())).is_ok(), "{ok:?}");
+        }
+        assert_eq!(name_key("The  \"Logo\""), name_key("the 'logo'"));
+        assert_ne!(name_key("logo"), name_key("logos"));
+    }
+
+    #[test]
+    fn unused_label_names_skip_taken_ones() {
+        let mut d = sample();
+        assert_eq!(d.unused_label_name(), "label 1");
+        *d.edits[0].name_mut() = Some("Label 1".into());
+        assert_eq!(d.unused_label_name(), "label 2");
+        assert_eq!(
+            d.edit_named("LABEL 1", None).map(Edit::id),
+            Some(d.edits[0].id())
+        );
+        assert!(d.edit_named("label 1", Some(d.edits[0].id())).is_none());
     }
 }

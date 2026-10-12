@@ -12,7 +12,8 @@
 //! - The binding's [`rules::When`] decides the context: single keys never
 //!   fire while a text field has focus or a drag is in progress; undo/redo
 //!   leave text fields to their native undo; `⌘C` yields to a page text
-//!   selection; `⌘O`, `⌘S` and `⌘V` work everywhere.
+//!   selection; `⌘O`, `⌘S` and `⌘V` work everywhere. `N` is a single key,
+//!   so `⌘N` / `Ctrl+N` stays the browser's (new window).
 //! - `preventDefault` only when the action ran, with two exceptions that
 //!   always suppress the browser's own dialog: `⌘S` (Save page) and `⌘O`
 //!   (Open file). `⌘V` is never prevented: the `paste` event does the work
@@ -206,6 +207,7 @@ impl Targets {
             }
             Action::Tool(_)
             | Action::Op(_)
+            | Action::Name
             | Action::Cancel
             | Action::DeleteSelected
             | Action::Undo
@@ -223,6 +225,9 @@ impl Targets {
                     // `preventDefault` keeps the "h" out of the field.
                     let _ = field.focus();
                 }
+                // `N` on a selection (and choosing Label) asks for the name
+                // field; `preventDefault` keeps the "n" out of it.
+                self.canvas.focus_name_if_asked();
                 done
             }
         }

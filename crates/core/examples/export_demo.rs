@@ -170,4 +170,48 @@ fn main() {
         .unwrap();
     let png = render_export(&narrow, ed.document()).unwrap();
     std::fs::write(out.join("export-narrow.png"), png).unwrap();
+
+    // Example 3 (#26): the same request with and without region names. Without
+    // names, the instructions have to describe each region ("the bar at the
+    // top"); with them, the badge, the caption row and the instructions all
+    // say "nav bar", and the model can answer in the same words.
+    let r = |a: (f64, f64), b: (f64, f64)| Region::rect_from_pixels(size, a, b).unwrap();
+    for named in [false, true] {
+        let mut ed = Editor::new(size);
+        let name = |n: &str| named.then(|| n.to_owned());
+        let bar = r((8.0, 8.0), (1272.0, 64.0));
+        if named {
+            ed.add_named_edit(bar, Op::Label, None, name("nav bar"))
+                .unwrap();
+        } else {
+            ed.add_edit(bar, Op::Hint, Some("this is the nav bar".into()))
+                .unwrap();
+        }
+        ed.add_named_edit(
+            r((96.0, 262.0), (276.0, 314.0)),
+            Op::Translate { dx: 0.0, dy: 0.08 },
+            Some("and make it green".into()),
+            name("signup button"),
+        )
+        .unwrap();
+        ed.add_named_edit(
+            r((840.0, 400.0), (1180.0, 650.0)),
+            Op::Hint,
+            Some("replace with a pricing table".into()),
+            name("third card"),
+        )
+        .unwrap();
+        ed.set_instructions(if named {
+            "match the signup button's color to the nav bar; keep the third card as wide as the others"
+        } else {
+            "match the button's color to the bar at the top; keep the card as wide as the others"
+        });
+        let png = render_export(&image, ed.document()).unwrap();
+        let file = if named {
+            "export-named.png"
+        } else {
+            "export-unnamed.png"
+        };
+        std::fs::write(out.join(file), png).unwrap();
+    }
 }
