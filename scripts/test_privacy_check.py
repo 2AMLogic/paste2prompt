@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -1327,6 +1328,101 @@ class W3cNamespaces(GuardTest):
         # The JS literal must be closed by the quote that opened it.
         self.js("e('http://www.w3.org/2000/svg\"');")
         self.assertFails("n.js:1", "string literal naming another origin")
+
+
+class InlineCssFailsClosed(GuardTest):
+    """#67: any <style> element or style attribute in dist/*.html is a finding.
+
+    The CSP's style-src 'self' blocks inline CSS in a browser and the app
+    uses none, so the guard fails closed instead of scanning its contents.
+    """
+
+    STYLE_ELEMENT = "inline <style> element"
+    STYLE_ATTR = "inline style attribute"
+    MUST_FAIL = {
+        "<style>": ("<style>a{background:url(//evil.example/x)}</style>", STYLE_ELEMENT),
+        "<STYLE>": ("<STYLE>a{color:red}</STYLE>", STYLE_ELEMENT),
+        "<Style> with attributes": ('<Style media="all">@import"//evil.example/a.css";</Style>',
+                                    STYLE_ELEMENT),
+        "empty <style>": ("<style></style>", STYLE_ELEMENT),
+        "harmless <style> content": ("<style>body{margin:0}</style>", STYLE_ELEMENT),
+        "style=\"\"": ('<p style="background:url(//evil.example/x)">x</p>', STYLE_ATTR),
+        "style=''": ("<p style='color:red'>x</p>", STYLE_ATTR),
+        "STYLE=": ('<p STYLE="color:red">x</p>', STYLE_ATTR),
+        "StYlE=": ('<p StYlE="color:red">x</p>', STYLE_ATTR),
+        "unquoted style=x": ("<p style=x>x</p>", STYLE_ATTR),
+        "spaces around =": ('<p style = "color:red">x</p>', STYLE_ATTR),
+        "valueless style": ("<p style>x</p>", STYLE_ATTR),
+        "empty style": ('<p style="">x</p>', STYLE_ATTR),
+        "slash before style": ("<p/style=x>x</p>", STYLE_ATTR),
+        "self-closing element": ('<br style="color:red"/>', STYLE_ATTR),
+        "charref-encoded value": ('<p style="background:&#117;rl(//evil.example/x)">x</p>', STYLE_ATTR),
+        "<style> in <template>": ("<template><style>a{color:red}</style></template>", STYLE_ELEMENT),
+        "style= in <template>": ('<template><p style="color:red">x</p></template>', STYLE_ATTR),
+        "<style> in <noscript>": ("<noscript><style>a{color:red}</style></noscript>", STYLE_ELEMENT),
+        "<style> in inline <svg>": ("<svg><style>rect{fill:url(//evil.example/x)}</style></svg>",
+                                    STYLE_ELEMENT),
+        "style= in inline <svg>": ('<svg><rect style="fill:red"/></svg>', STYLE_ATTR),
+        "<STYLE> in <SVG>": ("<SVG><STYLE>rect{fill:red}</STYLE></SVG>", STYLE_ELEMENT),
+    }
+
+    def test_must_fail(self):
+        for name, (body, needle) in self.MUST_FAIL.items():
+            with self.subTest(name):
+                self.fx.html(body)
+                self.fx.headers()
+                out = self.assertFails("index.html", needle, "inline CSS is not allowed")
+                self.assertEqual(out.count("inline CSS is not allowed"), 1, out)
+
+    def test_style_in_head_fails(self):
+        self.fx.write("dist/index.html", INDEX.replace("<head>", "<head><style>a{color:red}</style>"))
+        self.fx.headers()
+        self.assertFails("index.html", self.STYLE_ELEMENT)
+
+    def test_style_and_attribute_are_both_reported(self):
+        self.fx.html('<style>a{}</style><p style="x">y</p><svg><g style="x"/></svg>')
+        self.fx.headers()
+        out = self.assertFails(self.STYLE_ELEMENT, self.STYLE_ATTR)
+        self.assertEqual(out.count("inline CSS is not allowed"), 3, out)
+
+    def test_any_top_level_html_is_checked(self):
+        self.fx.write("dist/other.html", "<p style=x>x</p>\n")
+        self.assertFails("other.html", self.STYLE_ATTR)
+
+    def test_lookalikes_pass(self):
+        # Not an element or attribute named style: text, other attribute
+        # names, a comment, and markup inside a script string (runtime
+        # markup is out of scope here; the CSP blocks it).
+        self.fx.html('<p data-style="x" class="style" title="style=x">style=x &lt;style&gt;</p>'
+                     "<!-- <style>a{}</style> -->")
+        self.fx.headers()
+        self.assertPasses()
+
+    def test_real_built_index_html_passes(self):
+        """The index.html `trunk build --release` writes, copied verbatim.
+
+        Refresh it with `cp dist/index.html scripts/testdata/built-index.html`
+        after a build. CI's rust job also runs the guard on the live build.
+        """
+        real = Path(__file__).resolve().parent / "testdata" / "built-index.html"
+        text = real.read_text(encoding="utf-8")
+        self.assertNotIn("style=", text.lower())
+        names = sorted(set(re.findall(r"/(paste2prompt-web-[0-9a-f]+\.js|style-[0-9a-f]+\.css)", text)))
+        glue = next(n for n in names if n.endswith(".js"))
+        css = next(n for n in names if n.endswith(".css"))
+        for old in ("paste2prompt-web-1.js", "paste2prompt-web-1_bg.wasm", "style-1.css"):
+            (self.fx.dist / old).unlink()
+        self.fx.write(f"dist/{glue}", GLUE)
+        (self.fx.dist / glue.replace(".js", "_bg.wasm")).write_bytes(
+            wasm_with_imports(["__wbg_report_abc", "__wbindgen_throw"])
+        )
+        crate = Path(__file__).resolve().parent.parent / "crates" / "web"
+        self.fx.write(f"dist/{css}", (crate / "style.css").read_text(encoding="utf-8"))
+        self.fx.write("dist/favicon.svg", (crate / "favicon.svg").read_text(encoding="utf-8"))
+        (self.fx.dist / "favicon.ico").write_bytes(ICO_HEAD)
+        self.fx.write("dist/index.html", text)
+        self.fx.headers()
+        self.assertPasses()
 
 
 if __name__ == "__main__":
