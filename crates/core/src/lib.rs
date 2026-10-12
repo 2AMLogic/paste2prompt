@@ -8,8 +8,9 @@
 //! # Edit model
 //!
 //! - [`Region`]: a [`Rect`] or lasso [`Polygon`] on the **original** image, in
-//!   normalized coordinates (`0.0..=1.0` of width and height). [`ImageSize`]
-//!   converts to and from pixels.
+//!   normalized coordinates (`0.0..=1.0` of width and height). A lasso stores
+//!   the control points of a closed spline; [`Region::outline`] is the curve
+//!   everything draws and measures. [`ImageSize`] converts to and from pixels.
 //! - [`Op`]: translate, scale, mirror, rotate or hint.
 //! - [`Edit`]: a region, an op and an optional hint, with a stable [`EditId`].
 //! - [`Document`]: image size, ordered edits and image-level instructions,

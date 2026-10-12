@@ -10,7 +10,8 @@
 //!
 //! - A finished rectangle or lasso is one [`Editor::add_edit`], so one undo
 //!   step.
-//! - Every other drag (move source, translate, scale, rotate) is wrapped in
+//! - Every other drag (move source, reshape a lasso by a control point,
+//!   translate, scale, rotate) is wrapped in
 //!   [`Editor::begin_gesture`] / [`Editor::end_gesture`], so the whole drag
 //!   is one undo step; [`Controller::cancel`] (`Esc`) and a
 //!   `pointercancel` revert it with [`Editor::cancel_gesture`].
@@ -46,6 +47,8 @@ pub const CLICK_SLOP: f64 = 4.0;
 pub const LASSO_STEP: f64 = 2.0;
 /// Lasso simplification tolerance, in screen pixels.
 pub const LASSO_EPSILON: f64 = 1.5;
+/// Most control points a finished lasso keeps (spec §Operations, "Region").
+pub const LASSO_MAX_POINTS: usize = 10;
 /// Rotation snap step with Shift held, in degrees.
 pub const ROTATE_SNAP: f64 = 15.0;
 
@@ -173,6 +176,8 @@ pub enum Handle {
     Corner(usize),
     /// Rotation handle.
     Rotate,
+    /// A lasso's spline control point `i`, with the select tool (`V`).
+    Control(usize),
 }
 
 /// A region being drawn, for the view to preview.
@@ -211,6 +216,12 @@ enum Drag {
     MoveSource {
         id: EditId,
         start: Px,
+        region0: Region,
+    },
+    /// Dragging control point `index` of a lasso's source region.
+    Reshape {
+        id: EditId,
+        index: usize,
         region0: Region,
     },
     Translate {
@@ -474,12 +485,28 @@ impl Controller {
     }
 
     /// The selected edit's handles in image pixels: four scale corners for
-    /// a scale, one rotate handle for a rotate, none otherwise.
+    /// a scale, one rotate handle for a rotate, none for other ops; plus,
+    /// with the select tool, one per control point of a lasso.
     pub fn handles(&self) -> Vec<(Handle, Px)> {
         let (Some(s), Some(edit)) = (self.session.as_ref(), self.selected_edit()) else {
             return Vec::new();
         };
         let size = s.editor.document().image_size();
+        let region = edit.region();
+        let mut handles = self.op_handles(edit, size);
+        if let (Tool::Select, Region::Polygon(lasso)) = (self.tool, region) {
+            handles.extend(
+                lasso
+                    .points()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &p)| (Handle::Control(i), size.to_pixels(p))),
+            );
+        }
+        handles
+    }
+
+    fn op_handles(&self, edit: &Edit, size: ImageSize) -> Vec<(Handle, Px)> {
         let region = edit.region();
         match *edit.op() {
             Op::Scale { sx, sy, anchor } => {
@@ -527,6 +554,7 @@ impl Controller {
         match self.handle_at(p) {
             Some(Handle::Corner(_)) => return Cursor::Resize,
             Some(Handle::Rotate) => return Cursor::Rotate,
+            Some(Handle::Control(_)) => return Cursor::Move,
             None => {}
         }
         match self.tool {
@@ -593,6 +621,13 @@ impl Controller {
                         anchor_px,
                         degrees0: degrees,
                         start_angle: geom::rotation_degrees(anchor_px, p),
+                    });
+                }
+                (Handle::Control(index), _) => {
+                    return Some(Drag::Reshape {
+                        id,
+                        index,
+                        region0: region.clone(),
                     });
                 }
                 _ => {}
@@ -662,6 +697,15 @@ impl Controller {
                 debug_assert_eq!(tool, Tool::Select);
                 let (dx, dy) = size.delta_to_normalized(pos.0 - start.0, pos.1 - start.1);
                 s.editor.set_region(*id, region0.shifted(dx, dy))
+            }
+            Drag::Reshape { id, index, region0 } => {
+                // From the region at drag start, like a move. A position
+                // that would leave the control points enclosing no area
+                // keeps the last valid shape.
+                match region0.with_control_point(*index, size.to_normalized(pos.0, pos.1)) {
+                    Some(region) => s.editor.set_region(*id, region),
+                    None => Ok(()),
+                }
             }
             Drag::Translate { id, start, d0 } => {
                 let (dx, dy) = size.delta_to_normalized(pos.0 - start.0, pos.1 - start.1);
@@ -738,7 +782,7 @@ impl Controller {
             }
             Drag::Lasso { points } => {
                 let start = points[0];
-                let simplified = geom::simplify_closed(&points, epsilon);
+                let simplified = geom::simplify_lasso(&points, epsilon, LASSO_MAX_POINTS);
                 let spread = simplified
                     .iter()
                     .map(|&q| geom::dist(start, q))
@@ -1093,6 +1137,142 @@ mod tests {
         };
         assert_eq!(poly.points().len(), 4, "{:?}", poly.points());
         assert!(c.selected().is_some());
+    }
+
+    /// Draws a freehand lasso: a wobbly loop of `samples` pointer samples
+    /// around (100, 50) on the 200 x 100 image. Returns its edit id.
+    fn freehand_lasso(c: &mut Controller, samples: u32) -> EditId {
+        c.set_tool(Tool::Lasso);
+        let at = |i: u32| {
+            let t = f64::from(i) / f64::from(samples) * std::f64::consts::TAU;
+            let r = 1.0 + 0.25 * (5.0 * t).sin() + 0.05 * (23.0 * t).cos();
+            Pointer::at(100.0 + 60.0 * r * t.cos(), 50.0 + 30.0 * r * t.sin())
+        };
+        c.pointer_down(at(0));
+        for i in 1..samples {
+            c.pointer_move(at(i));
+        }
+        c.pointer_up(at(samples - 1));
+        c.selected().expect("a lasso was drawn")
+    }
+
+    fn control_points(c: &Controller, id: EditId) -> Vec<paste2prompt_core::Point> {
+        let doc = c.editor().unwrap().document();
+        match doc.edit(id).unwrap().region() {
+            Region::Polygon(p) => p.points().to_vec(),
+            Region::Rect(_) => panic!("expected a lasso"),
+        }
+    }
+
+    #[test]
+    fn freehand_lasso_keeps_at_most_ten_control_points() {
+        for samples in [60, 300, 2000] {
+            let mut c = loaded();
+            let id = freehand_lasso(&mut c, samples);
+            let n = control_points(&c, id).len();
+            assert!((3..=LASSO_MAX_POINTS).contains(&n), "{samples}: {n}");
+            // The whole lasso is one undo step.
+            assert!(c.undo());
+            assert!(edits(&c).is_empty());
+        }
+        // Zoomed out, the same screen tolerance is more image pixels; still
+        // capped and still a region.
+        let mut c = loaded();
+        c.set_view_scale(0.25);
+        let id = freehand_lasso(&mut c, 500);
+        assert!((3..=LASSO_MAX_POINTS).contains(&control_points(&c, id).len()));
+    }
+
+    #[test]
+    fn selected_lasso_shows_control_point_handles_with_select_tool() {
+        let mut c = loaded();
+        let id = freehand_lasso(&mut c, 400);
+        let size = c.editor().unwrap().document().image_size();
+        // The lasso tool is still active: no control handles.
+        assert!(
+            c.handles()
+                .iter()
+                .all(|(h, _)| !matches!(h, Handle::Control(_)))
+        );
+        c.set_tool(Tool::Select);
+        let ctrl = control_points(&c, id);
+        let handles: Vec<(Handle, Px)> = c
+            .handles()
+            .into_iter()
+            .filter(|(h, _)| matches!(h, Handle::Control(_)))
+            .collect();
+        assert_eq!(handles.len(), ctrl.len());
+        assert!(handles.len() <= LASSO_MAX_POINTS);
+        for (i, (h, pos)) in handles.iter().enumerate() {
+            assert_eq!(*h, Handle::Control(i));
+            assert_eq!(*pos, size.to_pixels(ctrl[i]));
+        }
+        assert_eq!(c.cursor_at(handles[0].1), Cursor::Move);
+        // A rectangle has none.
+        let mut c = loaded();
+        rect(&mut c);
+        c.set_tool(Tool::Select);
+        assert!(c.handles().is_empty());
+    }
+
+    #[test]
+    fn dragging_a_control_point_is_one_undo_step() {
+        let mut c = loaded();
+        let id = freehand_lasso(&mut c, 400);
+        c.set_tool(Tool::Select);
+        let size = c.editor().unwrap().document().image_size();
+        let before = control_points(&c, id);
+        let region_before = edits(&c)[0].region().clone();
+        let from = size.to_pixels(before[0]);
+        let to = (from.0 + 25.0, from.1 - 12.0);
+        drag(&mut c, Pointer::at(from.0, from.1), Pointer::at(to.0, to.1));
+        let after = control_points(&c, id);
+        // Only that control point moved, to the pointer.
+        let moved = size.to_pixels(after[0]);
+        assert!(close(moved.0, to.0) && close(moved.1, to.1), "{moved:?}");
+        assert_eq!(after[1..], before[1..]);
+        assert_eq!(c.selected(), Some(id));
+        // The whole drag undoes in one step, back to the drawn lasso; one
+        // more undo removes the lasso itself.
+        assert!(c.undo());
+        assert_eq!(edits(&c)[0].region(), &region_before);
+        assert!(c.can_undo());
+        assert!(c.undo());
+        assert!(edits(&c).is_empty());
+        assert!(c.redo() && c.redo());
+        assert_eq!(control_points(&c, id), after);
+    }
+
+    #[test]
+    fn control_point_drag_clamps_to_the_image_and_cancels() {
+        let mut c = loaded();
+        let id = freehand_lasso(&mut c, 400);
+        c.set_tool(Tool::Select);
+        let size = c.editor().unwrap().document().image_size();
+        let before = control_points(&c, id);
+        let from = size.to_pixels(before[2]);
+        drag(
+            &mut c,
+            Pointer::at(from.0, from.1),
+            Pointer::at(-80.0, 500.0),
+        );
+        let p = control_points(&c, id)[2];
+        assert_eq!((p.x, p.y), (0.0, 1.0));
+        assert!(
+            edits(&c)[0]
+                .region()
+                .outline()
+                .iter()
+                .all(|q| (0.0..=1.0).contains(&q.x) && (0.0..=1.0).contains(&q.y))
+        );
+        // Esc mid-drag reverts it without an undo step.
+        let reshaped = control_points(&c, id);
+        let from = size.to_pixels(reshaped[1]);
+        c.pointer_down(Pointer::at(from.0, from.1));
+        c.pointer_move(Pointer::at(from.0 + 30.0, from.1 + 10.0));
+        assert_ne!(control_points(&c, id), reshaped);
+        assert!(c.cancel());
+        assert_eq!(control_points(&c, id), reshaped);
     }
 
     #[test]
