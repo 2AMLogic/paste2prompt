@@ -24,8 +24,9 @@
 //!   screenshot), so call it when a pixel buffer is needed (export), not on
 //!   every frame.
 //! - A new value in [`ImageStore::current`] means a new session: the image
-//!   was replaced, and any confirmation about discarding edits has already
-//!   been given (see `input`).
+//!   was replaced (or cleared, `None`, by **Start over**), and any
+//!   confirmation about discarding edits has already been given (see
+//!   `input`).
 
 use leptos::prelude::*;
 use paste2prompt_core::RgbaImage;
@@ -166,5 +167,13 @@ impl ImageStore {
     /// Replace the session's image. Only the input paths call this.
     pub(crate) fn set(&self, image: LoadedImage) {
         self.current.set(Some(image));
+    }
+
+    /// Drop the session's image (**Start over**), back to the empty state.
+    /// Only the input paths call this, after any confirmation. The bitmap
+    /// is not closed: other readers (an export in flight, a clone) may still
+    /// hold it, and it is freed when the last one is dropped.
+    pub(crate) fn clear(&self) {
+        self.current.set(None);
     }
 }

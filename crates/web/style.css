@@ -172,6 +172,11 @@ h1 {
   gap: 0.25rem;
 }
 
+/* Sits next to the undo group, which can bring the edits back. */
+.history-clear {
+  margin-left: auto;
+}
+
 .history-empty {
   margin: 0;
   opacity: 0.7;

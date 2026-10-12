@@ -1,7 +1,8 @@
 //! Image input (spec §Input): paste, the file browser (**Open** button and
 //! `⌘O` / `Ctrl+O`), and drag and drop. All three paths end in
 //! [`ImageInput::load`], which asks before replacing an image that has edits,
-//! decodes the blob and stores it in [`ImageStore`].
+//! decodes the blob and stores it in [`ImageStore`]. **Start over**
+//! ([`ImageInput::start_over`]) asks the same way before clearing it.
 //!
 //! Files are read only through `Blob` / `createImageBitmap`. Nothing here
 //! makes a network request (CLAUDE.md rule 1), which is why a dropped link or
@@ -22,6 +23,7 @@ use crate::keymap::{self, rules::Action};
 use rules::{DropAction, Entry, PasteAction};
 
 const REPLACE_PROMPT: &str = "Load the new image? It replaces the current image and its edits.";
+const START_OVER_PROMPT: &str = "Start over? This removes the image and all its edits.";
 const MSG_LOADING: &str = "Loading image…";
 const MSG_PASTE_NO_IMAGE: &str =
     "The clipboard has no image. Copy an image or take a screenshot, then paste.";
@@ -96,6 +98,34 @@ impl ImageInput {
                     this.notice.set(notice);
                 }
                 Err(err) => this.notice.set(Some(err.message())),
+            }
+        });
+    }
+
+    /// **Start over**: drop the image and its edits and return to the empty
+    /// state, asking first if there are edits (like [`Self::load`]).
+    /// Cancelling keeps everything. A decode still in flight is dropped too,
+    /// so it can't bring an image back afterwards.
+    pub fn start_over(&self) {
+        if self.store.current().with_untracked(Option::is_none) {
+            return;
+        }
+        if self.has_edits.get_untracked() && !confirm(START_OVER_PROMPT) {
+            return;
+        }
+        self.generation.update_value(|g| *g += 1);
+        self.notice.set(None);
+        self.store.clear();
+        // The button is gone with the image; give focus to the empty
+        // state's Open button once it shows.
+        request_animation_frame(|| {
+            if let Some(el) = document()
+                .query_selector(".empty-state button.primary")
+                .ok()
+                .flatten()
+                .and_then(|e| e.dyn_into::<HtmlElement>().ok())
+            {
+                let _ = el.focus();
             }
         });
     }
@@ -256,6 +286,27 @@ pub fn OpenButton(input: ImageInput, #[prop(optional)] class: &'static str) -> i
             on:click=move |_| input.open_picker()
         >
             "Open…"
+        </button>
+    }
+}
+
+/// The header's **Start over** button: drops the image and its edits (see
+/// [`ImageInput::start_over`]). Disabled with no image. No shortcut, on
+/// purpose.
+#[component]
+pub fn StartOverButton(input: ImageInput) -> impl IntoView {
+    let current = input.store.current();
+    view! {
+        <button
+            type="button"
+            class="start-over"
+            data-action="start-over"
+            aria-label="Start over: remove the image and all edits"
+            title="Start over: remove the image and all edits"
+            disabled=move || current.with(Option::is_none)
+            on:click=move |_| input.start_over()
+        >
+            "Start over"
         </button>
     }
 }
