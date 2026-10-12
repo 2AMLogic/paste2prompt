@@ -65,7 +65,10 @@ def inline_script_hashes(html: str) -> list[str]:
 # endings), so any edit to the deployed file, such as another path block, a
 # `!` header-removal line, a Report-Only policy or a dropped directive, fails
 # the guard. The only variable part is SCRIPT_HASHES: the 'sha256-...' hash
-# of each inline script in dist/index.html (trunk's loader).
+# of each inline script in dist/index.html (trunk's loader). The guard also
+# checks this template itself (privacy_check.template_problems): one `/*`
+# block, no `!` lines, no Report-Only, and one CSP line equal to
+# CSP_DIRECTIVES joined. So the same edits made here fail too.
 SCRIPT_HASHES = "{SCRIPT_HASHES}"
 
 # Everything is denied unless listed. No directive names another origin.

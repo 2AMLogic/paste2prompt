@@ -253,15 +253,6 @@ class CspTemplateProperties(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(directives.get(name), want)
 
-    def test_template_is_one_star_block(self):
-        lines = write_headers.HEADERS_TEMPLATE.splitlines()
-        rules = [ln for ln in lines if ln and not ln.startswith((" ", "\t", "#"))]
-        self.assertEqual(rules, ["/*"])
-        self.assertFalse(any(ln.strip().startswith("!") for ln in lines))
-        self.assertEqual(sum("Content-Security-Policy:" in ln for ln in lines), 1)
-        self.assertNotIn("Report-Only", write_headers.HEADERS_TEMPLATE)
-        self.assertEqual(write_headers.HEADERS_TEMPLATE.count(write_headers.SCRIPT_HASHES), 1)
-
     def test_dropping_a_required_directive_is_a_problem(self):
         for name in ["form-action", "base-uri", "frame-ancestors", "connect-src", "default-src"]:
             with self.subTest(name=name):
@@ -328,6 +319,102 @@ class CspTemplateProperties(unittest.TestCase):
             rc, out = fx.run()
         self.assertEqual(rc, 1, out)
         self.assertIn("write_headers.py: template: CSP form-action must be exactly 'none'", out)
+
+
+class TemplateStructure(unittest.TestCase):
+    """Issue #32: the guard itself checks HEADERS_TEMPLATE's structure.
+
+    Each test edits the template in write_headers.py, writes dist/_headers
+    from the edited template (so the exact-match check passes), and runs the
+    guard, as `wrangler deploy`'s build step does. Only the guard's own
+    template check can fail it.
+    """
+
+    T = write_headers.HEADERS_TEMPLATE
+    CSP_LINE = f"  Content-Security-Policy: {write_headers.template_policy()}\n"
+
+    def run_guard(self, template: str) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as tmp, \
+                unittest.mock.patch.object(write_headers, "HEADERS_TEMPLATE", template):
+            fx = Fixture(Path(tmp))
+            # The deployed file matches the edited template, so only the
+            # template check can catch the edit.
+            self.assertEqual((fx.dist / "_headers").read_text(encoding="utf-8"),
+                             write_headers.expected_headers(fx.dist))
+            return fx.run()
+
+    def assertTemplateFails(self, template: str, *needles: str) -> None:
+        rc, out = self.run_guard(template)
+        self.assertEqual(rc, 1, f"guard passed an edited template:\n{out}")
+        self.assertIn("write_headers.py: HEADERS_TEMPLATE:", out)
+        for needle in needles:
+            self.assertIn(needle, out)
+
+    def test_real_template_has_no_problems(self):
+        self.assertEqual(privacy_check.template_problems(self.T), [])
+        self.assertIn(self.CSP_LINE, self.T)
+
+    def test_index_html_csp_removal_fails(self):
+        # The issue's reproduction.
+        self.assertTemplateFails(self.T + "/index.html\n  ! Content-Security-Policy\n",
+                                 "path block '/index.html'", "header-removal line",
+                                 "exactly one path block (/*), found 2")
+
+    def test_removal_line_in_star_block_fails(self):
+        self.assertTemplateFails(self.T + "  ! X-Content-Type-Options\n", "header-removal line")
+
+    def test_star_block_renamed_fails(self):
+        self.assertTemplateFails(self.T.replace("/*\n", "/index.html\n"),
+                                 "path block '/index.html'; the only block must be /*")
+
+    def test_other_path_block_fails(self):
+        for extra in ["/assets/*\n  Cache-Control: no-store\n",
+                      "https://paste2prompt.example/*\n  X-Robots-Tag: noindex\n"]:
+            with self.subTest(extra=extra):
+                self.assertTemplateFails(self.T + extra, "the only block must be /*")
+
+    def test_report_only_added_fails(self):
+        self.assertTemplateFails(
+            self.T + "  Content-Security-Policy-Report-Only: default-src 'none'\n",
+            "Report-Only")
+
+    def test_csp_turned_into_report_only_fails(self):
+        self.assertTemplateFails(
+            self.T.replace("Content-Security-Policy:", "Content-Security-Policy-Report-Only:"),
+            "Report-Only", "Content-Security-Policy exactly once, found 0")
+
+    def test_second_csp_line_fails(self):
+        self.assertTemplateFails(self.T + "  content-security-policy: default-src *\n",
+                                 "set more than once", "exactly once, found 2")
+
+    def test_csp_line_not_from_directives_fails(self):
+        # csp_problems checks CSP_DIRECTIVES, so a hand-edited line must equal it.
+        edited = self.T.replace("form-action 'none'", "form-action 'self'")
+        self.assertNotEqual(edited, self.T)
+        self.assertTemplateFails(edited, "is not '; '.join(CSP_DIRECTIVES)")
+
+    def test_header_before_block_fails(self):
+        self.assertTemplateFails("  Access-Control-Allow-Origin: *\n" + self.T,
+                                 "header line before the /* block")
+
+    def test_malformed_header_line_fails(self):
+        self.assertTemplateFails(self.T + "  /index.html\n", "not a 'Name: value' header")
+
+    def test_repeated_header_fails(self):
+        self.assertTemplateFails(self.T + "  X-Content-Type-Options: nosniff\n",
+                                 "x-content-type-options set more than once")
+
+    def test_placeholder_count(self):
+        # render_headers refuses this before the guard runs; check it directly.
+        problems = privacy_check.template_problems(
+            self.T + f"# {write_headers.SCRIPT_HASHES}\n")
+        self.assertIn("placeholder once, found 2", "\n".join(problems))
+        problems = privacy_check.template_problems(self.T.replace(write_headers.SCRIPT_HASHES, ""))
+        self.assertIn("placeholder once, found 0", "\n".join(problems))
+
+    def test_comments_and_blank_lines_are_allowed(self):
+        rc, out = self.run_guard("# a comment\n\n" + self.T + "\n# trailing\n")
+        self.assertEqual(rc, 0, out)
 
 
 class HeadersExact(GuardTest):

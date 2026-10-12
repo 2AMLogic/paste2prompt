@@ -44,7 +44,12 @@ fails closed instead of going unscanned.
    also checked here (csp_problems), so weakening it in write_headers.py
    fails too: default-src, base-uri, form-action and frame-ancestors are
    'none', connect-src is 'self', every directive has its own source
-   allowlist (CSP_ALLOWED), and there is no reporting directive.
+   allowlist (CSP_ALLOWED), and there is no reporting directive. The
+   template's structure is checked too (template_problems): exactly one path
+   block and it is `/*`, no `!` header-removal line, no Report-Only policy,
+   no repeated header, and exactly one Content-Security-Policy line, equal to
+   CSP_DIRECTIVES joined. `wrangler deploy` runs only this guard, not the
+   tests, so these properties have to hold here.
 
 Navigation (`open(`, `location = ...`, `location.href|host|hostname|... =`,
 `location[...]`, `location.assign`, `location.replace`) can also carry data
@@ -453,6 +458,59 @@ def csp_problems(policy: str) -> list[str]:
 _PLACEHOLDER_HASH = "'sha256-" + "A" * 43 + "='"
 
 
+def template_problems(template: str) -> list[str]:
+    """Why write_headers.py's HEADERS_TEMPLATE is not one strict `/*` block.
+
+    dist/_headers must equal the rendered template, so the exact-match check
+    cannot see a wrong template. In Cloudflare's _headers format, an
+    unindented line starts a path block, an indented `Name: value` line sets
+    a header on it, an indented `! Name` line removes one, and `#` starts a
+    comment. The template may have comments, exactly one path line (`/*`,
+    first), and headers under it. Anything else is a finding.
+    """
+    problems = []
+    paths: list[str] = []
+    seen: set[str] = set()
+    csp: list[str] = []
+    for lineno, line in enumerate(template.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        at = f"line {lineno}"
+        if not line[0].isspace():
+            paths.append(stripped)
+            if stripped != "/*":
+                problems.append(f"{at}: path block {stripped!r}; the only block must be /*")
+            continue
+        if not paths:
+            problems.append(f"{at}: header line before the /* block: {stripped[:120]!r}")
+        if stripped.startswith("!"):
+            problems.append(f"{at}: header-removal line {stripped[:120]!r}")
+            continue
+        name, colon, value = stripped.partition(":")
+        name = name.strip().lower()
+        if not colon or not name or " " in name:
+            problems.append(f"{at}: not a 'Name: value' header: {stripped[:120]!r}")
+            continue
+        if name in seen:
+            problems.append(f"{at}: header {name} set more than once")
+        seen.add(name)
+        if name == "content-security-policy":
+            csp.append(value.strip())
+    if "report-only" in template.lower():
+        problems.append("has a Report-Only policy, which enforces nothing")
+    if len(paths) != 1:
+        problems.append(f"must have exactly one path block (/*), found {len(paths)}")
+    if len(csp) != 1:
+        problems.append(f"must set Content-Security-Policy exactly once, found {len(csp)}")
+    elif csp[0] != write_headers.template_policy():
+        problems.append("Content-Security-Policy line is not '; '.join(CSP_DIRECTIVES)")
+    n = template.count(write_headers.SCRIPT_HASHES)
+    if n != 1:
+        problems.append(f"must contain the {write_headers.SCRIPT_HASHES} placeholder once, found {n}")
+    return problems
+
+
 def check_headers(dist: Path, f: Findings) -> None:
     path = dist / "_headers"
     where = str(path)
@@ -461,6 +519,8 @@ def check_headers(dist: Path, f: Findings) -> None:
     policy = write_headers.template_policy().replace(write_headers.SCRIPT_HASHES, _PLACEHOLDER_HASH)
     for problem in csp_problems(policy):
         f.add("scripts/write_headers.py", f"template: {problem}")
+    for problem in template_problems(write_headers.HEADERS_TEMPLATE):
+        f.add("scripts/write_headers.py", f"HEADERS_TEMPLATE: {problem}")
     if not path.is_file():
         f.add(where, "missing; run scripts/write_headers.py after trunk build")
         return
