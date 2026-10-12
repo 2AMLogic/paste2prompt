@@ -171,11 +171,18 @@ chords:
 
 Letters match the character printed on the key, so on AZERTY or Dvorak
 `M` is the key labelled M. When a layout types a letter from a non-Latin
-script (Cyrillic, Greek, Hebrew, Arabic, Korean, Japanese kana…), the
-physical key decides instead (`KeyboardEvent.code`), so `Ctrl+O` is the key
-with O printed on it. Latin letters outside ASCII (Turkish `ı`, BÉPO `è`)
-and symbols (Linux AltGr's `µ`) never fall back to the physical key, and
-nothing fires with AltGr held. `?` matches the typed character, and holding
+script (Cyrillic, Greek, Hebrew, Arabic, Indic, Thai, Khmer, Tibetan,
+Ethiopic, Korean, Japanese kana…), the physical key decides instead
+(`KeyboardEvent.code`), so `Ctrl+O` is the key with O printed on it. Latin
+letters outside ASCII (Turkish `ı`, BÉPO `è`, Ewe `ɔ`) and symbols (Linux
+AltGr's `µ`) never fall back to the physical key, and nothing fires with
+AltGr held. The non-Latin scripts are an allowlist of Unicode blocks, one
+for each script with a keyboard layout shipped by Windows, macOS or Linux,
+and only the letters in those blocks count. Many symbols are letters to
+Unicode (letterlike `ℓ`, circled `ⓜ`, Roman numeral `Ⅿ`, fullwidth `Ｍ`).
+A denylist of Latin blocks would let each one through. With the allowlist,
+a script nobody listed only leaves the shortcuts on that layout doing
+nothing. `?` matches the typed character, and holding
 it doesn't toggle the sheet. The sheet shows ⌘ on macOS and Ctrl elsewhere.
 
 ## Architecture
