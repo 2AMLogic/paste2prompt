@@ -10,8 +10,11 @@
 //! Arabic, Hebrew, ...) is replaced with U+FFFD `�`, a glyph added to the
 //! subset for this, and a run of such characters collapses into one `�`. A model
 //! reading the export then sees that text was there but couldn't be drawn.
-//! Whitespace is kept as is. Only the image is affected: the caption text
-//! (and so "Copy caption as text") keeps the original characters.
+//! Whitespace is kept as is. A letter the font can't draw as typed is
+//! NFC-normalized first, so decomposed accents draw as the precomposed glyph
+//! (see [`Text::drawable`]). Only the
+//! image is affected: the caption text (and so "Copy caption as text") keeps
+//! the original characters, unnormalized.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -20,6 +23,7 @@ use cosmic_text::{
     Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap, fontdb,
 };
 use tiny_skia::{Mask, Pixmap};
+use unicode_normalization::char::{canonical_combining_class, compose, decompose_canonical};
 
 /// Inter Regular (OFL-1.1, see `fonts/OFL.txt`), subset to Basic Latin,
 /// Latin-1, Latin Extended-A, Greek, Cyrillic, general punctuation and
@@ -105,8 +109,21 @@ impl Text {
         self.regular.as_swash().charmap().map(c) != 0
     }
 
-    /// `text` with each run of characters the font can't draw replaced by
-    /// one [`REPLACEMENT`]. Whitespace is always kept.
+    /// `text` with each run of letters the font can't draw replaced by one
+    /// [`REPLACEMENT`]. Whitespace is always kept.
+    ///
+    /// A letter is a character plus the combining marks after it (canonical
+    /// combining class above 0). One the font can't draw as typed is
+    /// NFC-normalized first, which composes decomposed accents (`e` +
+    /// U+0301) into the precomposed character the subset has (`é`); the
+    /// subset has no combining marks. Letters the font can draw are kept as
+    /// typed, since NFC would map a few of them (e.g. U+0374) to characters
+    /// outside the subset. If the normalized letter still can't be drawn, the
+    /// whole letter is replaced: `q` + U+0303, which has no precomposed form,
+    /// becomes `�`, not `q�`, the same as a precomposed character outside the
+    /// subset. So the export doesn't depend on which form the text was typed
+    /// in. A mark with no letter before it (at the start, or after
+    /// whitespace) is replaced on its own.
     pub fn drawable<'t>(&self, text: &'t str) -> Cow<'t, str> {
         let ok = |c: char| c.is_whitespace() || self.can_draw(c);
         if text.chars().all(ok) {
@@ -114,9 +131,26 @@ impl Text {
         }
         let mut out = String::with_capacity(text.len());
         let mut in_run = false;
-        for c in text.chars() {
-            if ok(c) {
-                out.push(c);
+        let mut rest = text;
+        while let Some(first) = rest.chars().next() {
+            let mut len = first.len_utf8();
+            if !first.is_whitespace() {
+                len += rest[len..]
+                    .chars()
+                    .take_while(|&c| canonical_combining_class(c) != 0)
+                    .map(char::len_utf8)
+                    .sum::<usize>();
+            }
+            let (letter, tail) = rest.split_at(len);
+            rest = tail;
+            if letter.chars().all(ok) {
+                out.push_str(letter);
+                in_run = false;
+                continue;
+            }
+            let composed = nfc_letter(letter);
+            if composed.iter().all(|&c| ok(c)) {
+                out.extend(composed);
                 in_run = false;
             } else if !in_run {
                 out.push(REPLACEMENT);
@@ -170,6 +204,20 @@ impl Text {
         (lines.join("\n"), all_found)
     }
 
+    /// Every character the regular face's cmap maps to a glyph.
+    #[cfg(test)]
+    pub fn mapped_chars(&self) -> Vec<char> {
+        let mut chars = Vec::new();
+        self.regular.as_swash().charmap().enumerate(|cp, glyph| {
+            if glyph != 0
+                && let Some(c) = char::from_u32(cp)
+            {
+                chars.push(c);
+            }
+        });
+        chars
+    }
+
     /// Single-line width of `text`.
     pub fn measure(&mut self, text: &str, style: Style) -> f32 {
         self.layout(text, style, None).width
@@ -196,6 +244,50 @@ impl Text {
             },
         );
     }
+}
+
+/// `letter` (one character and the combining marks after it) in NFC:
+/// canonically decomposed, its marks put in canonical order, then composed
+/// (Unicode §3.11). This is `str::nfc()` for a single letter, built from the
+/// crate's per-character functions so the compatibility-decomposition tables,
+/// which NFC never uses, don't reach the wasm. Letters are composed one at a
+/// time; the only compositions that would cross letters join two characters
+/// with combining class 0 (Hangul jamo, a few Indic vowel signs), none of
+/// which the subset covers either way.
+fn nfc_letter(letter: &str) -> Vec<char> {
+    let mut chars = Vec::with_capacity(letter.len());
+    for c in letter.chars() {
+        decompose_canonical(c, |d| chars.push(d));
+    }
+    // Canonical ordering: a stable sort of each run of marks by class.
+    for run in chars.chunk_by_mut(|&a, &b| {
+        canonical_combining_class(a) != 0 && canonical_combining_class(b) != 0
+    }) {
+        run.sort_by_key(|&c| canonical_combining_class(c));
+    }
+    // Canonical composition: each mark joins the last starter unless a
+    // character between them has class 0 or a class at least its own.
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut starter: Option<usize> = None;
+    let mut last_class: Option<u8> = None;
+    for c in chars {
+        let class = canonical_combining_class(c);
+        if let Some(s) = starter
+            && last_class.is_none_or(|l| l < class)
+            && let Some(composed) = compose(out[s], c)
+        {
+            out[s] = composed;
+            continue;
+        }
+        if class == 0 {
+            starter = Some(out.len());
+            last_class = None;
+        } else {
+            last_class = Some(class);
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Source-over blends a solid rectangle (usually one glyph pixel) onto an
@@ -229,6 +321,60 @@ fn blend_rect(pixmap: &mut Pixmap, clip: Option<&Mask>, x: i32, y: i32, w: u32, 
                 data[i + k] = ((src[k] * a + d * (255 - a) + 127) / 255) as u8;
             }
             data[i + 3] = 255;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use unicode_normalization::UnicodeNormalization;
+
+    use super::*;
+
+    fn nfc(s: &str) -> String {
+        s.nfc().collect()
+    }
+
+    fn ours(s: &str) -> String {
+        nfc_letter(s).into_iter().collect()
+    }
+
+    /// Every character, alone and fully decomposed: `nfc_letter` agrees with
+    /// the crate's own `str::nfc()` whenever the input is one letter.
+    #[test]
+    fn nfc_letter_matches_str_nfc() {
+        let one_letter = |s: &str| s.chars().skip(1).all(|c| canonical_combining_class(c) != 0);
+        let mut checked = 0;
+        for c in (0..=0x10_FFFF).filter_map(char::from_u32) {
+            let s = c.to_string();
+            assert_eq!(ours(&s), nfc(&s), "U+{:04X}", u32::from(c));
+            let d: String = s.nfd().collect();
+            if one_letter(&d) {
+                assert_eq!(ours(&d), nfc(&d), "NFD of U+{:04X}", u32::from(c));
+                checked += 1;
+            }
+        }
+        assert!(checked > 1000, "{checked}");
+    }
+
+    #[test]
+    fn nfc_letter_orders_and_blocks_marks() {
+        for s in [
+            // Out of canonical order: dot below (220) after acute (230).
+            "e\u{301}\u{323}",
+            "e\u{323}\u{301}",
+            // Precomposed letter plus another mark.
+            "\u{e9}\u{323}",
+            // Two marks of one class: the second is blocked from composing.
+            "a\u{301}\u{300}",
+            // A mark that never composes, between the letter and one that does.
+            "a\u{31b}\u{301}",
+            "u\u{31b}\u{301}",
+            // A lone mark.
+            "\u{301}",
+            "\u{301}\u{323}",
+        ] {
+            assert_eq!(ours(s), nfc(s), "{s:?}");
         }
     }
 }

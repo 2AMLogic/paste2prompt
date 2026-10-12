@@ -5,6 +5,7 @@
 //! `UPDATE_GOLDENS=1 cargo test -p paste2prompt-core render` and review the
 //! new PNGs before committing them.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use super::*;
@@ -552,6 +553,123 @@ fn unmappable_text_is_visible_in_the_export() {
     let plain = Caption::from_document(&doc).to_plain_text();
     assert!(plain.contains(UNMAPPABLE_HINT), "{plain}");
     assert!(plain.contains(UNMAPPABLE_INSTRUCTIONS), "{plain}");
+}
+
+/// "Café, Größe, Ñandú, άΐ, йё", once precomposed (NFC) and once decomposed
+/// (NFD, base letter plus combining marks, as some macOS sources paste it).
+const ACCENTED_NFC: &str =
+    "Caf\u{e9}, Gr\u{f6}\u{df}e, \u{d1}and\u{fa}, \u{3ac}\u{390}, \u{439}\u{451}";
+const ACCENTED_NFD: &str = "Cafe\u{301}, Gro\u{308}\u{df}e, N\u{303}andu\u{301}, \u{3b1}\u{301}\u{3b9}\u{308}\u{301}, \u{438}\u{306}\u{435}\u{308}";
+
+fn fixture_accented(hint: &str) -> (RgbaImage, Document) {
+    let image = test_image(480, 300);
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_edit(rect(0.2, 0.2, 0.6, 0.5), Op::Hint, Some(hint.into()))
+        .unwrap();
+    ed.set_instructions(hint);
+    (image, ed.into_document())
+}
+
+#[test]
+fn decomposed_accents_are_drawn_precomposed() {
+    let text = Text::new();
+    // Guard the fixture: the two spellings differ only in normalization.
+    assert_ne!(ACCENTED_NFC, ACCENTED_NFD);
+    assert_eq!(text.drawable(ACCENTED_NFD), ACCENTED_NFC);
+    assert_eq!(text.drawable("e\u{301}"), "\u{e9}");
+    // Several marks on one letter compose too (ι + diaeresis + acute = ΐ).
+    assert_eq!(text.drawable("\u{3b9}\u{308}\u{301}"), "\u{390}");
+}
+
+#[test]
+fn precomposed_text_is_unchanged() {
+    let text = Text::new();
+    for s in [ACCENTED_NFC, "ok — Größe Привет", "a\tb\n", ""] {
+        assert!(
+            matches!(text.drawable(s), Cow::Borrowed(b) if b == s),
+            "{s:?} was rewritten"
+        );
+    }
+}
+
+#[test]
+fn a_mark_with_no_drawable_composition_replaces_its_whole_letter() {
+    let text = Text::new();
+    // q + tilde has no precomposed form; Inter's subset has no combining
+    // marks. The letter and its mark become one `�`, not `q�`.
+    assert_eq!(text.drawable("q\u{303}"), "\u{FFFD}");
+    assert_eq!(text.drawable("aq\u{303}b"), "a\u{FFFD}b");
+    // Every mark on the letter goes with it.
+    assert_eq!(text.drawable("xq\u{303}\u{301}\u{323}y"), "x\u{FFFD}y");
+    // Composes to a character outside the subset (Vietnamese ệ, U+1EC7):
+    // the same `�` as the precomposed spelling, whichever form was typed.
+    assert_eq!(text.drawable("e\u{323}\u{302}"), "\u{FFFD}");
+    assert_eq!(text.drawable("\u{1ec7}"), "\u{FFFD}");
+    assert_eq!(
+        text.drawable("Vi\u{1ec7}t"),
+        text.drawable("Vie\u{323}\u{302}t")
+    );
+    // Partly composable: é composes, the extra mark has nowhere to go.
+    assert_eq!(text.drawable("e\u{301}\u{330}z"), "\u{FFFD}z");
+    // Joins an adjacent run of unmappable characters into one `�`.
+    assert_eq!(text.drawable("中q\u{303}文"), "\u{FFFD}");
+    // A mark with no letter (at the start, or after whitespace) is its own
+    // `�`; the whitespace is kept.
+    assert_eq!(text.drawable("\u{301}x"), "\u{FFFD}x");
+    assert_eq!(text.drawable("a \u{301}b"), "a \u{FFFD}b");
+    // Not a combining mark: a variation selector after a drawable arrow
+    // keeps the existing per-character rule.
+    assert_eq!(text.drawable("\u{2194}\u{fe0f}"), "\u{2194}\u{FFFD}");
+}
+
+#[test]
+fn normalizing_never_loses_a_drawable_character() {
+    // Every character the subset maps must still be drawable after NFC,
+    // or normalizing would turn drawable text into `�`. The trailing `中`
+    // keeps `drawable` off its fast path, so the text is normalized.
+    let text = Text::new();
+    for c in text.mapped_chars() {
+        let input = format!("{c}\u{4e2d}");
+        let drawn: Vec<char> = text.drawable(&input).chars().collect();
+        assert!(
+            drawn.len() == 2
+                && (drawn[0] != '\u{FFFD}' || c == '\u{FFFD}')
+                && drawn[1] == '\u{FFFD}',
+            "U+{:04X} is not drawable after normalizing: {drawn:?}",
+            u32::from(c)
+        );
+    }
+}
+
+#[test]
+fn decomposed_text_exports_like_precomposed_text() {
+    let nfd = fixture_accented(ACCENTED_NFD);
+    let lines = caption_lines(&nfd.1);
+    let mut text = Text::new();
+    let band = layout_band(&mut text, &lines, nfd.0.width.max(MIN_EXPORT_WIDTH) as f32);
+    let mut laid_out = String::new();
+    for item in &band.items {
+        if let Item::Text { block, .. } = item {
+            let (s, all_found) = Text::laid_out(block);
+            assert!(all_found, "{s:?} shaped to a missing glyph");
+            laid_out.push_str(&s);
+            laid_out.push('\n');
+        }
+    }
+    assert!(!laid_out.contains('\u{FFFD}'), "{laid_out}");
+    assert!(laid_out.contains(ACCENTED_NFC), "{laid_out}");
+
+    // The two spellings export to the same image, pixel for pixel.
+    let nfc = fixture_accented(ACCENTED_NFC);
+    assert_eq!(
+        render_export(&nfd.0, &nfd.1).unwrap(),
+        render_export(&nfc.0, &nfc.1).unwrap()
+    );
+
+    // Copy caption as text keeps the characters as typed, unnormalized.
+    let plain = Caption::from_document(&nfd.1).to_plain_text();
+    assert!(plain.contains(ACCENTED_NFD), "{plain}");
+    assert!(!plain.contains(ACCENTED_NFC), "{plain}");
 }
 
 #[test]
