@@ -11,6 +11,8 @@ pub struct Row {
     pub number: usize,
     /// The op's name, e.g. `translate`.
     pub op: &'static str,
+    /// The region's name, if it has one (#26).
+    pub name: Option<String>,
     /// What the edit does, from the caption row, e.g. `move right 15%, up 4%`.
     pub summary: String,
     pub selected: bool,
@@ -31,6 +33,7 @@ pub fn rows(doc: &Document, selected: Option<EditId>) -> Vec<Row> {
             id: edit.id(),
             number: line.number,
             op: line.op,
+            name: edit.name().map(str::to_owned),
             summary: line.description,
             selected: selected == Some(edit.id()),
         })
@@ -122,6 +125,7 @@ mod tests {
             )
             .unwrap();
         ed.move_edit(b, 0).unwrap();
+        ed.set_name(a, Some("flag".into())).unwrap();
 
         let rows = rows(ed.document(), Some(a));
         assert_eq!(rows.len(), 2);
@@ -129,6 +133,8 @@ mod tests {
         assert!(rows[0].summary.contains("make it red"));
         assert!(!rows[0].selected);
         assert_eq!((rows[1].id, rows[1].number, rows[1].op), (a, 2, "mirror"));
+        assert_eq!(rows[0].name, None);
+        assert_eq!(rows[1].name.as_deref(), Some("flag"));
         assert!(rows[1].selected);
         assert!(!rows[1].summary.is_empty());
     }

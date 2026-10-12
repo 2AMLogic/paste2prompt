@@ -51,11 +51,12 @@ impl MarkScale {
         (self.halo - self.stroke) / 2.0 + 1.0
     }
 
-    /// The full (width, height) of edit `number`'s solid badge, ring
-    /// included, in image pixels: what [`super::badge_positions`] places.
-    pub fn badge_extent(self, text: &mut Text, number: usize) -> (f64, f64) {
+    /// The full (width, height) of edit `number`'s solid badge (with its
+    /// region's `name`, if any), ring included, in image pixels: what
+    /// [`super::badge_positions`] places.
+    pub fn badge_extent(self, text: &mut Text, number: usize, name: Option<&str>) -> (f64, f64) {
         let ring = 2.0 * self.solid_ring();
-        let w = badge_width(text, number, self.badge) + ring;
+        let w = badge_width(text, &badge_label(number, name), self.badge) + ring;
         (f64::from(w), f64::from(self.badge + ring))
     }
 }
@@ -110,7 +111,7 @@ impl Marks<'_> {
                     let clear =
                         (gx - cx).hypot(gy - cy) >= 2.0 * b && (gx - sx).hypot(gy - sy) >= 1.5 * b;
                     if clear && (0.0..iw).contains(&gx) && (0.0..ih).contains(&gy) {
-                        self.badge(number, (gx, gy), rgb, true);
+                        self.badge(number, None, (gx, gy), rgb, true);
                     }
                 }
                 Op::Mirror { axis } => {
@@ -126,7 +127,9 @@ impl Marks<'_> {
         if let Some(path) = source {
             self.solid(&path, rgb);
         }
-        self.badge(number, badge, rgb, false);
+        // The source badge carries the region's name (`1 logo`); the
+        // hollow destination badge keeps just the number.
+        self.badge(number, edit.name(), badge, rgb, false);
     }
 
     fn paint(rgb: [u8; 3]) -> Paint<'static> {
@@ -290,11 +293,19 @@ impl Marks<'_> {
     /// stays wholly inside the image (a no-op for a source badge, which
     /// [`super::badge_positions`] already placed inside). A ghost badge is hollow (white with a
     /// colored ring and number) so it can't be mistaken for the source.
-    fn badge(&mut self, number: usize, corner: (f64, f64), rgb: [u8; 3], hollow: bool) {
+    fn badge(
+        &mut self,
+        number: usize,
+        name: Option<&str>,
+        corner: (f64, f64),
+        rgb: [u8; 3],
+        hollow: bool,
+    ) {
         let s = self.scale;
         let h = if hollow { s.badge * 0.8 } else { s.badge };
         let ring = if hollow { s.stroke } else { s.solid_ring() };
-        let w = badge_width(self.text, number, h);
+        let label = badge_label(number, name);
+        let w = badge_width(self.text, &label, h);
         let (iw, ih) = (self.size.width() as f32, self.size.height() as f32);
         let fit = |v: f64, half: f32, max: f32| {
             let lo = half + ring;
@@ -309,7 +320,7 @@ impl Marks<'_> {
             self.text,
             Some(self.clip),
             Badge {
-                number,
+                label: &label,
                 center,
                 height: h,
                 ring,
@@ -320,9 +331,11 @@ impl Marks<'_> {
     }
 }
 
-/// A numbered badge: a capsule with a ring around it and the number inside.
-pub(super) struct Badge {
-    pub number: usize,
+/// A numbered badge: a capsule with a ring around it and the number (and
+/// the region's name, if it has one) inside.
+pub(super) struct Badge<'a> {
+    /// The text inside: [`badge_label`].
+    pub label: &'a str,
     /// Center, in canvas pixels.
     pub center: (f32, f32),
     pub height: f32,
@@ -341,14 +354,24 @@ fn badge_style(height: f32) -> Style {
     }
 }
 
-/// Width of the capsule for `number` at `height` (a circle for one digit).
-pub(super) fn badge_width(text: &mut Text, number: usize, height: f32) -> f32 {
-    let label = text.measure(&number.to_string(), badge_style(height));
+/// The text of edit `number`'s badge: the number, then the region's name
+/// if it has one (`1 logo`), so the mark itself carries the name a caption
+/// row or a reply refers to.
+pub(super) fn badge_label(number: usize, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{number} {name}"),
+        None => number.to_string(),
+    }
+}
+
+/// Width of the capsule for `label` at `height` (a circle for one digit).
+pub(super) fn badge_width(text: &mut Text, label: &str, height: f32) -> f32 {
+    let label = text.measure(label, badge_style(height));
     (label + height * 0.5).max(height)
 }
 
 pub(super) fn draw_badge(pixmap: &mut Pixmap, text: &mut Text, clip: Option<&Mask>, b: Badge) {
-    let mut label = text.layout(&b.number.to_string(), badge_style(b.height), None);
+    let mut label = text.layout(b.label, badge_style(b.height), None);
     let w = (label.width + b.height * 0.5).max(b.height);
     let (cx, cy) = b.center;
     let (outer, inner, ink) = if b.hollow {

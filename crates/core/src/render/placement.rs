@@ -159,12 +159,14 @@ pub fn badge_position(
 /// [`badge_position`]: each badge avoids the earlier edits' badges and,
 /// where it can, every other edit's region.
 ///
-/// `badge(number)` gives the full (width, height) in image pixels of the
-/// badge for edit `number` (1-based, as printed on it). The result has one
-/// placement per edit, in the same order.
+/// `badge(number, name)` gives the full (width, height) in image pixels of
+/// the badge for edit `number` (1-based, as printed on it) whose region is
+/// named `name`: a named region's badge also shows its name (`1 logo`), so
+/// it is wider, and the placement keeps the whole capsule clear. The result
+/// has one placement per edit, in the same order.
 pub fn badge_positions(
     doc: &Document,
-    mut badge: impl FnMut(usize) -> (f64, f64),
+    mut badge: impl FnMut(usize, Option<&str>) -> (f64, f64),
 ) -> Vec<BadgePlacement> {
     let size = doc.image_size();
     let boxes: Vec<PixelBox> = doc
@@ -179,7 +181,7 @@ pub fn badge_positions(
         .collect();
     let mut placed = Vec::with_capacity(boxes.len());
     let mut others = Vec::with_capacity(boxes.len());
-    for (i, &region) in boxes.iter().enumerate() {
+    for (i, (&region, edit)) in boxes.iter().zip(doc.edits()).enumerate() {
         others.clear();
         others.extend(
             boxes
@@ -188,7 +190,7 @@ pub fn badge_positions(
                 .filter(|&(j, _)| j != i)
                 .map(|(_, b)| *b),
         );
-        let p = badge_position(region, badge(i + 1), size, &others, &placed);
+        let p = badge_position(region, badge(i + 1, edit.name()), size, &others, &placed);
         placed.push(p);
     }
     placed
@@ -324,11 +326,48 @@ mod tests {
         ed.add_edit(rect(0.0, 0.0, 1.0, 1.0), Op::Hint, Some("c".into()))
             .unwrap();
         let doc = ed.into_document();
-        let a = badge_positions(&doc, |_| BADGE);
-        let b = badge_positions(&doc, |_| BADGE);
+        let a = badge_positions(&doc, |_, _| BADGE);
+        let b = badge_positions(&doc, |_, _| BADGE);
         assert_eq!(a, b);
         assert_eq!(a.len(), 3);
         assert!(a[0].outside && a[1].outside && !a[2].outside);
         assert!(!a[0].overlaps_badge(&a[1]));
+    }
+
+    #[test]
+    fn a_named_badge_is_placed_by_its_full_width() {
+        // A named region near the left edge: the wide `1 logo` capsule
+        // doesn't fit up-left of the corner, so it goes above, flush left,
+        // and still clears its own region and its neighbour's badge.
+        let s = size(400, 300);
+        let mut ed = Editor::new(s);
+        let rect = |x0, y0, x1, y1| Region::rect(Point::new(x0, y0), Point::new(x1, y1)).unwrap();
+        ed.add_named_edit(
+            rect(0.05, 0.3, 0.2, 0.4),
+            Op::Label,
+            None,
+            Some("logo".into()),
+        )
+        .unwrap();
+        ed.add_edit(rect(0.3, 0.3, 0.4, 0.4), Op::Hint, Some("b".into()))
+            .unwrap();
+        let doc = ed.into_document();
+        let mut seen = Vec::new();
+        let wide = (90.0, 28.0);
+        let p = badge_positions(&doc, |n, name| {
+            seen.push((n, name.map(str::to_owned)));
+            if name.is_some() { wide } else { BADGE }
+        });
+        assert_eq!(seen, [(1, Some("logo".to_owned())), (2, None)]);
+        assert_eq!(p[0].size, wide);
+        assert!(p[0].outside && p[0].inside(s), "{:?}", p[0]);
+        let boxes = [
+            PixelBox::new(20.0, 90.0, 80.0, 120.0),
+            PixelBox::new(120.0, 90.0, 160.0, 120.0),
+        ];
+        for b in &boxes {
+            assert!(clear_of(&p[0], b), "{:?} covers {b:?}", p[0]);
+        }
+        assert!(!p[0].overlaps_badge(&p[1]));
     }
 }

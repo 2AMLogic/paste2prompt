@@ -14,8 +14,9 @@
 //!   [`Editor::begin_gesture`] / [`Editor::end_gesture`], so the whole drag
 //!   is one undo step; [`Controller::cancel`] (`Esc`) and a
 //!   `pointercancel` revert it with [`Editor::cancel_gesture`].
-//! - Picking an operation, toggling the mirror axis and typing a hint go
-//!   through [`Editor::set_op`] and [`Editor::set_hint`].
+//! - Picking an operation, toggling the mirror axis and typing a hint or a
+//!   name go through [`Editor::set_op`], [`Editor::set_hint`] and
+//!   [`Editor::set_name`].
 //!
 //! Hit-testing only looks at source regions (see [`geom::hit_test`]), so a
 //! ghost is never selectable and a new region never starts from one.
@@ -25,12 +26,14 @@
 //! The app holds one `Controller` in a signal (see [`super::CanvasState`]).
 //! Shortcuts map onto [`Controller::set_tool`] (`V`/`R`/`L`),
 //! [`Controller::choose_op`] (`T`/`S`/`M`/`O`/`H`; `M` again toggles the
-//! axis), [`Controller::cancel`] (`Esc`), [`Controller::delete_selected`]
+//! axis), [`Controller::name_key`] (`N`), [`Controller::cancel`] (`Esc`),
+//! [`Controller::delete_selected`]
 //! (`Delete`), and [`Controller::undo`] / [`Controller::redo`]. A history
 //! row click is [`Controller::select`].
 
 use paste2prompt_core::{
-    Anchor, Edit, EditError, EditId, Editor, ImageSize, MirrorAxis, Op, Region,
+    Anchor, Edit, EditError, EditId, Editor, ImageSize, MAX_NAME_CHARS, MirrorAxis, NameError, Op,
+    Region,
 };
 
 use super::geom::{self, Px};
@@ -89,16 +92,19 @@ pub enum OpKind {
     Rotate,
     /// `H`
     Hint,
+    /// `N` with nothing selected: the next region drawn is only named.
+    Label,
 }
 
 impl OpKind {
     /// Every op, in toolbar order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Translate,
         Self::Scale,
         Self::Mirror,
         Self::Rotate,
         Self::Hint,
+        Self::Label,
     ];
 
     /// The kind of `op`.
@@ -109,6 +115,7 @@ impl OpKind {
             Op::Mirror { .. } => Self::Mirror,
             Op::Rotate { .. } => Self::Rotate,
             Op::Hint => Self::Hint,
+            Op::Label => Self::Label,
         }
     }
 
@@ -123,6 +130,7 @@ impl OpKind {
                 anchor: Anchor::Center,
             },
             Self::Hint => Op::Hint,
+            Self::Label => Op::Label,
         }
     }
 
@@ -134,6 +142,7 @@ impl OpKind {
             Self::Mirror => "Mirror",
             Self::Rotate => "Rotate",
             Self::Hint => "Hint",
+            Self::Label => "Label",
         }
     }
 }
@@ -265,6 +274,10 @@ pub struct Controller {
     /// Screen pixels per image pixel, for screen-sized tolerances.
     view_scale: f64,
     session: Option<Session>,
+    /// Set when the name field should take focus (a label was just drawn,
+    /// or `N` with a selection); the view takes it with
+    /// [`Self::take_name_focus`].
+    name_focus: bool,
 }
 
 impl Default for Controller {
@@ -282,6 +295,7 @@ impl Controller {
             mirror_axis: MirrorAxis::Horizontal,
             view_scale: 1.0,
             session: None,
+            name_focus: false,
         }
     }
 
@@ -344,6 +358,9 @@ impl Controller {
         };
         if OpKind::of(&op) == kind {
             return Ok(());
+        }
+        if kind == OpKind::Label {
+            return self.make_label(id);
         }
         self.apply_op(id, kind.default_op(axis))
     }
@@ -725,6 +742,7 @@ impl Controller {
         let epsilon = self.screen(LASSO_EPSILON);
         let axis = self.mirror_axis;
         let op = self.op_kind.default_op(axis);
+        let label = op == Op::Label;
         let Some(s) = &mut self.session else { return };
         let Some(drag) = s.drag.take() else { return };
         let size = s.editor.document().image_size();
@@ -756,9 +774,13 @@ impl Controller {
         };
         match region {
             Ok(region) => {
+                // A label needs a name: it starts as a free `label N`, and the
+                // name field takes focus so typing replaces it. Otherwise
                 // add_edit only rejects an invalid op; defaults are valid.
-                if let Ok(id) = s.editor.add_edit(region, op, None) {
+                let name = label.then(|| s.editor.document().unused_label_name());
+                if let Ok(id) = s.editor.add_named_edit(region, op, None, name) {
                     s.selected = Some(id);
+                    self.name_focus |= label;
                 }
             }
             Err(click) => {
@@ -952,6 +974,99 @@ impl Controller {
     /// Call when the instructions box gains or loses focus, so one typing
     /// session is one undo step of its own.
     pub fn end_instructions_edit(&mut self) {
+        if let Some(s) = &mut self.session {
+            s.editor.break_coalescing();
+        }
+    }
+}
+
+/// The message shown under the name field when typing `text` was rejected
+/// with `e`, or `None` for an error the name field can't cause.
+pub fn name_message(e: &EditError, text: &str) -> Option<String> {
+    let EditError::InvalidName(e) = e else {
+        return None;
+    };
+    Some(match e {
+        NameError::Duplicate => format!(
+            "Another region is already named \u{201c}{}\u{201d}. Names must be unique.",
+            text.trim()
+        ),
+        NameError::TooLong => format!("Names can be at most {MAX_NAME_CHARS} characters."),
+        NameError::InvalidCharacter => "Names can't contain line breaks.".to_owned(),
+        NameError::LabelNeedsName => {
+            "A label needs a name. Delete the edit to remove it.".to_owned()
+        }
+    })
+}
+
+/// Region names (#26): the `N` key, the name field and labels.
+impl Controller {
+    /// `N`. With an edit selected, asks for its name field to take focus
+    /// (the op is unchanged: any edit can have a name). With nothing
+    /// selected, picks [`OpKind::Label`], so the next region drawn is a
+    /// label and its name field takes focus. Returns whether it did
+    /// anything (nothing without an image).
+    pub fn name_key(&mut self) -> bool {
+        if self.session.is_none() {
+            return false;
+        }
+        self.cancel_drag();
+        if self.selected().is_some() {
+            self.name_focus = true;
+        } else {
+            self.op_kind = OpKind::Label;
+        }
+        true
+    }
+
+    /// Whether the name field should take focus now; clears the request.
+    pub fn take_name_focus(&mut self) -> bool {
+        std::mem::take(&mut self.name_focus)
+    }
+
+    /// Turns edit `id` into a label, first giving it a free `label N` name
+    /// if it has none. One undo step.
+    fn make_label(&mut self, id: EditId) -> Result<(), EditError> {
+        self.cancel_drag();
+        let Some(s) = &mut self.session else {
+            return Ok(());
+        };
+        s.editor.begin_gesture();
+        let mut result = Ok(());
+        if s.editor
+            .document()
+            .edit(id)
+            .is_some_and(|e| e.name().is_none())
+        {
+            let name = s.editor.document().unused_label_name();
+            result = s.editor.set_name(id, Some(name));
+            self.name_focus = true;
+        }
+        let result = result.and_then(|()| s.editor.set_op(id, Op::Label));
+        if result.is_ok() {
+            s.editor.end_gesture();
+        } else {
+            s.editor.cancel_gesture();
+            self.name_focus = false;
+        }
+        result
+    }
+
+    /// Sets the selected edit's name (blank clears it). Consecutive calls
+    /// coalesce into one undo step until [`Self::end_name_edit`]. A
+    /// rejected name (too long, a line break, another region's name, or a
+    /// blank label) changes nothing; the caller shows the error.
+    pub fn set_name(&mut self, text: &str) -> Result<(), EditError> {
+        let Some(id) = self.selected() else {
+            return Ok(());
+        };
+        let s = self.session.as_mut().expect("selection implies a session");
+        s.editor.set_name(id, Some(text.to_owned()))
+    }
+
+    /// Call when the name field gains or loses focus, so one typing session
+    /// is one undo step of its own.
+    pub fn end_name_edit(&mut self) {
         if let Some(s) = &mut self.session {
             s.editor.break_coalescing();
         }
@@ -1492,5 +1607,52 @@ mod tests {
         // And that drag undoes back to the old destination.
         assert!(c.undo());
         assert_eq!(edits(&c)[0].op(), &before);
+    }
+
+    #[test]
+    fn naming_the_selected_edit_and_duplicate_messages() {
+        let mut c = loaded();
+        let a = rect(&mut c);
+        c.set_name("logo").unwrap();
+        c.end_name_edit();
+        c.select(None);
+        drag(&mut c, Pointer::at(120.0, 10.0), Pointer::at(160.0, 50.0));
+        let b = c.selected().unwrap();
+        assert_ne!(a, b);
+        let err = c.set_name("LOGO").unwrap_err();
+        assert_eq!(c.selected_edit().unwrap().name(), None);
+        assert_eq!(
+            name_message(&err, " LOGO ").as_deref(),
+            Some("Another region is already named \u{201c}LOGO\u{201d}. Names must be unique.")
+        );
+        let too_long = c.set_name(&"x".repeat(41)).unwrap_err();
+        assert!(name_message(&too_long, "").unwrap().contains("40"));
+        assert_eq!(name_message(&EditError::UnknownEdit(a), "x"), None);
+        // With nothing selected, typing a name does nothing.
+        c.select(None);
+        assert_eq!(c.set_name("anything"), Ok(()));
+    }
+
+    #[test]
+    fn choosing_label_names_an_unnamed_edit_in_one_step() {
+        let mut c = loaded();
+        let a = rect(&mut c);
+        assert!(!c.take_name_focus());
+        c.choose_op(OpKind::Label).unwrap();
+        let e = c.selected_edit().unwrap();
+        assert_eq!((*e.op(), e.name()), (Op::Label, Some("label 1")));
+        assert!(c.take_name_focus());
+        assert!(c.undo());
+        let e = c.editor().unwrap().document().edit(a).unwrap();
+        assert_eq!(e.name(), None);
+        assert!(!matches!(e.op(), Op::Label));
+        // A named edit keeps its name when it becomes a label.
+        c.select(Some(a));
+        c.set_name("hero").unwrap();
+        c.choose_op(OpKind::Label).unwrap();
+        assert_eq!(c.selected_edit().unwrap().name(), Some("hero"));
+        assert!(!c.take_name_focus());
+        // A label can't lose its name.
+        assert!(name_message(&c.set_name("  ").unwrap_err(), "").is_some());
     }
 }

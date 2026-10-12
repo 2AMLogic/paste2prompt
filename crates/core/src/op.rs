@@ -97,6 +97,10 @@ pub enum Op {
     },
     /// No geometric change; the edit's hint text carries the instruction.
     Hint,
+    /// No change at all: the region is only named, so the instructions and
+    /// the model's reply can refer to it by that name. A label edit always
+    /// has a name ([`Edit::name`](crate::Edit::name)).
+    Label,
 }
 
 impl Op {
@@ -110,7 +114,7 @@ impl Op {
     }
 
     /// The operation's lowercase name, as used in the caption (`"translate"`,
-    /// `"scale"`, `"mirror"`, `"rotate"`, `"hint"`).
+    /// `"scale"`, `"mirror"`, `"rotate"`, `"hint"`, `"label"`).
     pub fn name(&self) -> &'static str {
         match self {
             Self::Translate { .. } => "translate",
@@ -118,6 +122,7 @@ impl Op {
             Self::Mirror { .. } => "mirror",
             Self::Rotate { .. } => "rotate",
             Self::Hint => "hint",
+            Self::Label => "label",
         }
     }
 
@@ -165,12 +170,12 @@ impl Op {
                 finite(degrees)?;
                 validate_anchor(anchor)
             }
-            Self::Mirror { .. } | Self::Hint => Ok(()),
+            Self::Mirror { .. } | Self::Hint | Self::Label => Ok(()),
         }
     }
 
     /// The display-only outline of `region` after this op, or `None` for a
-    /// hint. See [`Ghost`].
+    /// hint or a label. See [`Ghost`].
     pub(crate) fn ghost(&self, region: &Region, size: ImageSize) -> Option<Ghost> {
         let outline = region.outline();
         let map = |f: &dyn Fn(Point) -> Point| outline.iter().copied().map(f).collect();
@@ -198,7 +203,7 @@ impl Op {
                     size.to_normalized(ax + rx * cos - ry * sin, ay + rx * sin + ry * cos)
                 })
             }
-            Self::Hint => return None,
+            Self::Hint | Self::Label => return None,
         };
         Some(Ghost { outline: points })
     }
@@ -444,8 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn hint_has_no_ghost() {
+    fn hint_and_label_have_no_ghost() {
         assert!(Op::Hint.ghost(&rect(), square_image()).is_none());
+        assert!(Op::Label.ghost(&rect(), square_image()).is_none());
+        assert!(Op::Label.validate().is_ok());
     }
 
     #[test]
@@ -461,10 +468,14 @@ mod tests {
                 anchor: Anchor::Center,
             },
             Op::Hint,
+            Op::Label,
         ]
         .iter()
         .map(Op::name)
         .collect();
-        assert_eq!(names, ["translate", "scale", "mirror", "rotate", "hint"]);
+        assert_eq!(
+            names,
+            ["translate", "scale", "mirror", "rotate", "hint", "label"]
+        );
     }
 }

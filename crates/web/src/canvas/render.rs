@@ -32,6 +32,7 @@ const SELECTED_BADGE_GAP: f64 = 2.5;
 const SELECTED_BADGE_RING: f64 = 2.5;
 const SELECTED_BADGE_OUTER_RING: f64 = 2.0;
 const HANDLE_SIZE: f64 = 9.0;
+const BADGE_FONT: &str = "bold 12px system-ui, sans-serif";
 
 /// Draws one frame. `ctx` is already scaled so one unit is one CSS pixel.
 pub fn draw(
@@ -82,9 +83,13 @@ pub fn draw(
     // The export's placement rule (core `badge_positions`): outside the
     // region where it fits, so the badge never hides what it labels. The
     // badge is a fixed size on screen, so its size in image pixels depends on
-    // the zoom.
-    let d = (2.0 * BADGE_RADIUS + BADGE_RING) / view.scale.max(f64::MIN_POSITIVE);
-    let badges = badge_positions(doc, |_| (d, d));
+    // the zoom. A named region's badge (`1 logo`) is a wider capsule.
+    let per_px = 1.0 / view.scale.max(f64::MIN_POSITIVE);
+    let d = 2.0 * BADGE_RADIUS + BADGE_RING;
+    let badges = badge_positions(doc, |number, name| {
+        let w = badge_width(ctx, &badge_label(number, name)) + BADGE_RING;
+        (w * per_px, d * per_px)
+    });
 
     for (i, (edit, placed)) in doc.edits().iter().zip(&badges).enumerate() {
         let pts = screen_points(view, &edit.region().outline_pixels(size));
@@ -106,7 +111,7 @@ pub fn draw(
         badge(
             ctx,
             view.to_screen(placed.center),
-            number,
+            &badge_label(number, edit.name()),
             &color,
             is_selected,
         )?;
@@ -260,13 +265,42 @@ fn mirror_glyph(
     Ok(())
 }
 
+/// The badge text: the number, then the region's name if it has one
+/// (`1 logo`), as on the export's badge.
+fn badge_label(number: usize, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("{number} {name}"),
+        None => number.to_string(),
+    }
+}
+
+/// The badge's width on screen (CSS pixels, its ring excluded): a circle
+/// for a short number, a capsule around a longer label.
+fn badge_width(ctx: &CanvasRenderingContext2d, label: &str) -> f64 {
+    ctx.set_font(BADGE_FONT);
+    let text = ctx.measure_text(label).map_or(0.0, |m| m.width());
+    (text + BADGE_RADIUS * 1.2).max(2.0 * BADGE_RADIUS)
+}
+
+/// Traces a horizontal capsule of radius `r` around `at`, its two end
+/// circles `half` either side of center (a circle when `half` is 0).
+fn capsule(ctx: &CanvasRenderingContext2d, at: Px, half: f64, r: f64) -> Result<(), JsValue> {
+    use std::f64::consts::FRAC_PI_2;
+    ctx.begin_path();
+    ctx.arc(at.0 + half, at.1, r, -FRAC_PI_2, FRAC_PI_2)?;
+    ctx.arc(at.0 - half, at.1, r, FRAC_PI_2, 3.0 * FRAC_PI_2)?;
+    ctx.close_path();
+    Ok(())
+}
+
 fn badge(
     ctx: &CanvasRenderingContext2d,
     at: Px,
-    number: usize,
+    label: &str,
     color: &str,
     selected: bool,
 ) -> Result<(), JsValue> {
+    let half = (badge_width(ctx, label) / 2.0 - BADGE_RADIUS).max(0.0);
     if selected {
         // A light ring outside a dark ring outside a white gap, outside the
         // badge's own ring: one of the two rings contrasts with any image.
@@ -277,22 +311,20 @@ fn badge(
             (dark, SELECTION_RING),
             (r + SELECTED_BADGE_GAP, "#fff"),
         ] {
-            ctx.begin_path();
-            ctx.arc(at.0, at.1, radius, 0.0, std::f64::consts::TAU)?;
+            capsule(ctx, at, half, radius)?;
             ctx.set_fill_style_str(fill);
             ctx.fill();
         }
     }
-    ctx.begin_path();
-    ctx.arc(at.0, at.1, BADGE_RADIUS, 0.0, std::f64::consts::TAU)?;
+    capsule(ctx, at, half, BADGE_RADIUS)?;
     ctx.set_fill_style_str(color);
     ctx.fill();
     ctx.set_stroke_style_str("#fff");
     ctx.set_line_width(BADGE_RING);
     ctx.stroke();
     ctx.set_fill_style_str("#fff");
-    ctx.set_font("bold 12px system-ui, sans-serif");
+    ctx.set_font(BADGE_FONT);
     ctx.set_text_align("center");
     ctx.set_text_baseline("middle");
-    ctx.fill_text(&number.to_string(), at.0, at.1 + 0.5)
+    ctx.fill_text(label, at.0, at.1 + 0.5)
 }

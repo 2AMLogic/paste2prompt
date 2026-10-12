@@ -43,7 +43,7 @@ use tiny_skia::{FillRule, Mask, PathBuilder, Pixmap, Transform};
 use crate::caption::{ARROW, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines};
 use crate::document::Document;
 use crate::geometry::ImageSize;
-use marks::{Badge, MarkScale, Marks, badge_width, draw_badge};
+use marks::{Badge, MarkScale, Marks, badge_label, badge_width, draw_badge};
 use text::{Block, Style, Text};
 
 pub use placement::{BadgePlacement, PixelBox, badge_position, badge_positions};
@@ -236,7 +236,9 @@ fn render_pixmap(image: &RgbaImage, doc: &Document) -> Result<Pixmap, RenderErro
         );
     }
     let scale = MarkScale::for_image(size);
-    let badges = badge_positions(doc, |number| scale.badge_extent(&mut text, number));
+    let badges = badge_positions(doc, |number, name| {
+        scale.badge_extent(&mut text, number, name)
+    });
     let mut marks = Marks {
         pixmap: &mut pixmap,
         text: &mut text,
@@ -416,7 +418,7 @@ impl Band {
                     text,
                     None,
                     Badge {
-                        number: *number,
+                        label: &badge_label(*number, None),
                         center: (center.0, top + center.1),
                         height: *height,
                         ring: 0.0,
@@ -465,7 +467,7 @@ fn layout_band(text: &mut Text, lines: &[CaptionLine], width: f32) -> Band {
         })
         .collect();
     let max_number = edits.iter().map(|e| e.number).max().unwrap_or(1);
-    let badge_col = badge_width(text, max_number, badge_h) + gap;
+    let badge_col = badge_width(text, &badge_label(max_number, None), badge_h) + gap;
     let op_w = edits
         .iter()
         .map(|e| text.measure(e.op, regular))
@@ -484,10 +486,11 @@ fn layout_band(text: &mut Text, lines: &[CaptionLine], width: f32) -> Band {
     let mut items = Vec::new();
     let mut y = rule as f32 + pad;
     let mut prev_header = false;
-    for line in lines {
+    for (i, line) in lines.iter().enumerate() {
         match line {
             CaptionLine::Header(h) => {
-                // First header line in bold, the second muted.
+                // First header line in bold, the rest (the coordinates rule,
+                // and the names line when there are names) muted.
                 let (style, rgb) = if prev_header {
                     (regular, MUTED_INK)
                 } else {
@@ -502,7 +505,8 @@ fn layout_band(text: &mut Text, lines: &[CaptionLine], width: f32) -> Band {
                     rgb,
                 });
                 y += height;
-                if prev_header {
+                let last_header = !matches!(lines.get(i + 1), Some(CaptionLine::Header(_)));
+                if prev_header && last_header {
                     y += f * 0.5;
                 }
                 prev_header = true;

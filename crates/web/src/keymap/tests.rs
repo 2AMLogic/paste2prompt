@@ -104,6 +104,7 @@ const SPEC: &[Row] = &[
     row("m", "KeyM", M::None, Action::Op(OpKind::Mirror), SINGLE),
     row("o", "KeyO", M::None, Action::Op(OpKind::Rotate), SINGLE),
     row("h", "KeyH", M::None, Action::Op(OpKind::Hint), SINGLE),
+    row("n", "KeyN", M::None, Action::Name, SINGLE),
     row("Escape", "Escape", M::None, Action::Cancel, EDITOR),
     row("Delete", "Delete", M::None, Action::DeleteSelected, SINGLE),
     row(
@@ -179,6 +180,7 @@ fn no_two_bindings_share_a_chord() {
         ("y", "KeyY"),
         ("o", "KeyO"),
         ("s", "KeyS"),
+        ("n", "KeyN"),
         ("щ", "KeyO"),
         ("?", "Slash"),
         ("Escape", "Escape"),
@@ -208,7 +210,7 @@ fn single_key_shortcuts_never_fire_while_typing() {
         text_field: true,
         ..Context::default()
     };
-    for key in "vrltsmohcVRLTSMOHC?".chars() {
+    for key in "vrltsmohncVRLTSMOHNC?".chars() {
         let key = key.to_string();
         let code = format!("Key{}", key.to_ascii_uppercase());
         for m in [M::None, M::Shift] {
@@ -411,6 +413,8 @@ fn labels_follow_the_platform() {
         (Action::CopyCaption, Apple, "C"),
         (Action::Tool(Tool::Rect), Other, "R"),
         (Action::Op(OpKind::Rotate), Apple, "O"),
+        (Action::Name, Apple, "N"),
+        (Action::Name, Other, "N"),
         (Action::Cancel, Apple, "Esc"),
         (Action::DeleteSelected, Other, "Delete / Backspace"),
         (Action::DeleteSelected, Apple, "⌦ / ⌫"),
@@ -425,6 +429,7 @@ fn labels_follow_the_platform() {
         "Meta+Shift+Z Control+Shift+Z Control+Y"
     );
     assert_eq!(super::rules::aria(Action::Tool(Tool::Lasso)), "L");
+    assert_eq!(super::rules::aria(Action::Name), "N");
 }
 
 #[test]
@@ -563,4 +568,40 @@ fn escape_cancels_a_drag_then_a_reorder_then_deselects() {
     assert_eq!(order(&c), [a, b]);
     assert!(apply(Action::Redo, &mut c).unwrap());
     assert_eq!(order(&c), [a, b, d]);
+}
+
+#[test]
+fn n_names_the_selection_or_arms_a_label() {
+    // Without an image, N does nothing and keeps its ordinary meaning.
+    let mut c = Controller::new();
+    assert_eq!(apply(Action::Name, &mut c), Some(false));
+
+    // With a selection: the name field is asked for; the op is untouched.
+    let mut c = loaded();
+    let a = rect_at(&mut c, 10.0);
+    let kind = c.op_kind();
+    assert_eq!(apply(Action::Name, &mut c), Some(true));
+    assert!(c.take_name_focus());
+    assert!(!c.take_name_focus(), "the request is taken once");
+    assert_eq!(c.op_kind(), kind);
+    assert_eq!(c.selected(), Some(a));
+
+    // With nothing selected: the next region is a label, named `label N`,
+    // and its name field is asked for.
+    c.select(None);
+    assert_eq!(apply(Action::Name, &mut c), Some(true));
+    assert_eq!(c.op_kind(), OpKind::Label);
+    assert!(!c.take_name_focus());
+    let b = rect_at(&mut c, 80.0);
+    assert!(c.take_name_focus());
+    let doc = c.editor().unwrap().document();
+    assert_eq!(*doc.edit(b).unwrap().op(), paste2prompt_core::Op::Label);
+    assert_eq!(doc.edit(b).unwrap().name(), Some("label 1"));
+    // Typing replaces it; one undo step for the typing.
+    for typed in ["n", "na", "nav"] {
+        c.set_name(typed).unwrap();
+    }
+    assert_eq!(c.selected_edit().unwrap().name(), Some("nav"));
+    assert!(c.undo());
+    assert_eq!(c.selected_edit().unwrap().name(), Some("label 1"));
 }

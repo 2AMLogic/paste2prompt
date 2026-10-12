@@ -148,6 +148,54 @@ fn fixture_all_ops() -> (RgbaImage, Document) {
     (image, ed.into_document())
 }
 
+/// Named regions (#26): a label (a name and nothing else) across the top, a
+/// named translate, a named lasso whose name has non-ASCII letters (the bold
+/// badge face is ASCII-only, so they fall back to the regular face) and an
+/// unnamed rotate. Badges read `1 nav bar`, `2 logo`, `3 Größe`, `4`, and the
+/// caption gets the names header line.
+fn fixture_named() -> (RgbaImage, Document) {
+    let image = test_image(800, 500);
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_named_edit(
+        rect(0.02, 0.03, 0.98, 0.11),
+        Op::Label,
+        None,
+        Some("nav bar".into()),
+    )
+    .unwrap();
+    ed.add_named_edit(
+        rect(0.12, 0.30, 0.40, 0.48),
+        Op::Translate { dx: 0.15, dy: 0.25 },
+        None,
+        Some("logo".into()),
+    )
+    .unwrap();
+    ed.add_named_edit(
+        Region::polygon([
+            pt(0.58, 0.62),
+            pt(0.80, 0.60),
+            pt(0.86, 0.82),
+            pt(0.62, 0.86),
+        ])
+        .unwrap(),
+        Op::Hint,
+        Some("make it the brand green".into()),
+        Some("Größe".into()),
+    )
+    .unwrap();
+    ed.add_edit(
+        rect(0.60, 0.22, 0.75, 0.40),
+        Op::Rotate {
+            degrees: 15.0,
+            anchor: Anchor::Center,
+        },
+        None,
+    )
+    .unwrap();
+    ed.set_instructions("put the logo under the nav bar, left of Größe");
+    (image, ed.into_document())
+}
+
 /// No edits and no instructions: just the header.
 fn fixture_empty() -> (RgbaImage, Document) {
     let image = test_image(720, 120);
@@ -281,6 +329,40 @@ fn golden_transparent() {
 #[test]
 fn golden_unmappable() {
     check_golden("unmappable", fixture_unmappable());
+}
+
+#[test]
+fn golden_named() {
+    check_golden("named", fixture_named());
+}
+
+#[test]
+fn a_named_badge_is_wider_and_shows_the_name() {
+    let (image, doc) = fixture_named();
+    let scale = MarkScale::for_image(size_of(&image));
+    let mut text = Text::new();
+    let plain = scale.badge_extent(&mut text, 2, None);
+    let named = scale.badge_extent(&mut text, 2, Some("logo"));
+    assert_eq!(plain.1, named.1, "same height");
+    assert!(named.0 > plain.0 * 2.0, "{named:?} vs {plain:?}");
+    assert_eq!(marks::badge_label(2, Some("logo")), "2 logo");
+    assert_eq!(marks::badge_label(12, None), "12");
+    // Unmappable letters in a name are drawn as U+FFFD, like any text.
+    assert_eq!(text.drawable("logo 中文"), "logo \u{FFFD}");
+
+    // The source badges are placed by their full width (`badge_positions`
+    // keeps that whole capsule off its region; see placement's tests).
+    let badges = badge_positions(&doc, |n, name| scale.badge_extent(&mut text, n, name));
+    for (i, (edit, b)) in doc.edits().iter().zip(&badges).enumerate() {
+        assert_eq!(b.size, scale.badge_extent(&mut text, i + 1, edit.name()));
+    }
+    assert!(badges[0].size.0 > badges[3].size.0 * 2.0);
+    let caption = Caption::from_document(&doc).to_plain_text();
+    assert!(caption.contains(crate::NAMES_HEADER), "{caption}");
+    assert!(
+        caption.contains(r#"#2  translate  "logo" (12%,30%)-(40%,48%)"#),
+        "{caption}"
+    );
 }
 
 #[test]

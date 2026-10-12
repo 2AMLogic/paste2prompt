@@ -164,6 +164,7 @@ pub fn HistoryPanel() -> impl IntoView {
             id,
             number,
             op,
+            name,
             summary,
             selected,
         } = row;
@@ -199,7 +200,11 @@ pub fn HistoryPanel() -> impl IntoView {
                 ));
             }
         };
-        let label = format!("Edit {number}: {op}, {summary}");
+        let quoted = name.as_ref().map(|n| format!("\u{201c}{n}\u{201d}"));
+        let label = match &quoted {
+            Some(q) => format!("Edit {number}: {op} {q}, {summary}"),
+            None => format!("Edit {number}: {op}, {summary}"),
+        };
         view! {
             <li class=class data-edit-id=key.to_string()>
                 <span
@@ -220,6 +225,7 @@ pub fn HistoryPanel() -> impl IntoView {
                 >
                     <span class=format!("badge {}", mark_class(number))>{number}</span>
                     <span class="history-op">{op}</span>
+                    {quoted.map(|q| view! { <span class="history-name">{q}</span> })}
                     <span class="history-summary">{summary}</span>
                 </button>
                 <button

@@ -10,8 +10,9 @@
 //! - [`Region`]: a [`Rect`] or lasso [`Polygon`] on the **original** image, in
 //!   normalized coordinates (`0.0..=1.0` of width and height). [`ImageSize`]
 //!   converts to and from pixels.
-//! - [`Op`]: translate, scale, mirror, rotate or hint.
-//! - [`Edit`]: a region, an op and an optional hint, with a stable [`EditId`].
+//! - [`Op`]: translate, scale, mirror, rotate, hint or label.
+//! - [`Edit`]: a region, an op, an optional hint and an optional name
+//!   (unique within the document, ignoring case), with a stable [`EditId`].
 //! - [`Document`]: image size, ordered edits and image-level instructions,
 //!   with a stable JSON format ([`Document::to_json`]).
 //! - [`Editor`]: the only way to change a document; owns undo/redo history
@@ -49,9 +50,12 @@ mod op;
 mod render;
 
 pub use caption::{
-    ARROW, CAPTION_HEADER, Caption, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines,
+    ARROW, CAPTION_HEADER, Caption, CaptionLine, EditLine, NAMES_HEADER, OVERALL_PREFIX,
+    caption_lines,
 };
-pub use document::{Document, DocumentError, Edit, EditId, FORMAT_VERSION};
+pub use document::{
+    Document, DocumentError, Edit, EditId, FORMAT_VERSION, MAX_NAME_CHARS, NameError,
+};
 pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};
 pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};

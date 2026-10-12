@@ -36,6 +36,11 @@
 //! - Hints are quoted, with runs of whitespace (including line breaks)
 //!   collapsed to one space so each edit stays on one line. Double quotes
 //!   inside a hint become single quotes.
+//! - A named region prints its name, quoted like a hint, in place of the
+//!   word `region` or `lasso`: `"logo" (12%,30%)-(40%,52%)`. A label edit
+//!   (a name and nothing else) reads `→  named "logo"`. When any region has
+//!   a name, a third header line ([`NAMES_HEADER`]) says the names can be
+//!   used to refer to the regions.
 //! - Image-level instructions follow as `Overall: …` only when they contain
 //!   text. Each non-blank line of a multi-line instruction becomes its own
 //!   caption line, indented under the first. Every Unicode line break (LF,
@@ -53,6 +58,11 @@ pub const CAPTION_HEADER: [&str; 2] = [
     "Coordinates are % of image width/height. Edits refer to the original image.",
 ];
 
+/// The header line added after [`CAPTION_HEADER`] when at least one region
+/// has a name. Captions without names keep the two-line header.
+pub const NAMES_HEADER: &str =
+    "Named regions can be referred to by name in the instructions and in your reply.";
+
 /// Prefix of the image-level instructions line. A renderer laying out
 /// [`CaptionLine::Overall`] itself draws this before the text and indents
 /// [`CaptionLine::OverallContinued`] by its width.
@@ -69,7 +79,7 @@ const PCT_LIMIT: f64 = 1_000_000.0;
 /// One line of the caption block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptionLine {
-    /// One of the two fixed [`CAPTION_HEADER`] lines.
+    /// One of the two fixed [`CAPTION_HEADER`] lines, or [`NAMES_HEADER`].
     Header(&'static str),
     /// One edit, split into columns.
     Edit(EditLine),
@@ -111,7 +121,9 @@ pub struct EditLine {
     /// or `hint`. An op with a hint attached keeps its own name.
     pub op: &'static str,
     /// Where the region is, e.g. `region (12%,30%)-(40%,52%)` or
-    /// `lasso around (50%,70%) within (40%,60%)-(60%,80%)`.
+    /// `lasso around (50%,70%) within (40%,60%)-(60%,80%)`. A named region
+    /// has its quoted name in place of `region` or `lasso`:
+    /// `"logo" (12%,30%)-(40%,52%)`.
     pub region: String,
     /// What to do, in words, e.g. `move right 15%, up 4%`, with any hint
     /// quoted at the end.
@@ -128,7 +140,7 @@ impl EditLine {
         Self {
             number,
             op: edit.op().name(),
-            region: describe_region(edit.region()),
+            region: region_column(edit),
             description: describe_edit(edit),
         }
     }
@@ -148,6 +160,9 @@ impl Caption {
             .iter()
             .map(|h| CaptionLine::Header(h))
             .collect();
+        if doc.edits().iter().any(|e| e.name().is_some()) {
+            lines.push(CaptionLine::Header(NAMES_HEADER));
+        }
         lines.extend(
             doc.edits()
                 .iter()
@@ -311,9 +326,26 @@ fn within(p: Point, r: &Rect) -> bool {
         && (min.y - EPS..=max.y + EPS).contains(&p.y)
 }
 
+/// The region column, with a named region's quoted name in place of its
+/// leading `region` / `lasso` word.
+fn region_column(edit: &Edit) -> String {
+    let region = describe_region(edit.region());
+    match (edit.name(), region.split_once(' ')) {
+        (Some(name), Some((_, rest))) => format!("{} {rest}", quote_hint(name)),
+        _ => region,
+    }
+}
+
 fn describe_edit(edit: &Edit) -> String {
     let hint = edit.hint().map(quote_hint).filter(|h| h.len() > 2);
     match (edit.op(), hint) {
+        (Op::Label, hint) => {
+            let name = edit.name().map_or("(no name)".to_owned(), quote_hint);
+            match hint {
+                Some(h) => format!("named {name}; also {h}"),
+                None => format!("named {name}"),
+            }
+        }
         (Op::Hint, Some(h)) => h,
         (Op::Hint, None) => "(no hint text)".to_owned(),
         (op, Some(h)) => format!("{}; also {h}", describe_op(op, edit.region())),
@@ -321,7 +353,7 @@ fn describe_edit(edit: &Edit) -> String {
     }
 }
 
-/// Quotes a hint, collapsing whitespace so it stays on one line. Double
+/// Quotes a hint or a name, collapsing whitespace so it stays on one line. Double
 /// quotes inside the hint become single quotes, so the hint can't appear to
 /// end early and the closing quote is always the last one on the row.
 fn quote_hint(hint: &str) -> String {
@@ -353,7 +385,7 @@ fn describe_op(op: &Op, region: &Region) -> String {
             }
         }
         Op::Rotate { degrees, anchor } => describe_rotate(degrees, &about(anchor, region)),
-        Op::Hint => String::new(),
+        Op::Hint | Op::Label => String::new(),
     }
 }
 
@@ -975,5 +1007,101 @@ mod tests {
         let c = Caption::from_document(ed.document());
         assert_eq!(c.to_string(), c.to_plain_text());
         assert!(!c.to_plain_text().ends_with('\n'));
+    }
+
+    #[test]
+    fn named_regions_and_labels() {
+        let mut ed = editor();
+        ed.add_named_edit(
+            rect_region(0.0, 0.0, 1.0, 0.08),
+            Op::Label,
+            None,
+            Some("nav bar".into()),
+        )
+        .unwrap();
+        ed.add_named_edit(
+            rect_region(0.12, 0.30, 0.40, 0.52),
+            Op::Translate {
+                dx: 0.15,
+                dy: -0.04,
+            },
+            None,
+            Some("logo".into()),
+        )
+        .unwrap();
+        ed.add_named_edit(
+            Region::polygon([
+                Point::new(0.1, 0.1),
+                Point::new(0.7, 0.1),
+                Point::new(0.1, 0.4),
+            ])
+            .unwrap(),
+            Op::Rotate {
+                degrees: 90.0,
+                anchor: Anchor::Center,
+            },
+            Some("keep it crisp".into()),
+            Some("hero image".into()),
+        )
+        .unwrap();
+        ed.add_named_edit(
+            rect_region(0.6, 0.6, 0.8, 0.7),
+            Op::Label,
+            Some("leave as is".into()),
+            Some("search box".into()),
+        )
+        .unwrap();
+        ed.add_edit(
+            rect_region(0.3, 0.6, 0.4, 0.7),
+            Op::Hint,
+            Some("unnamed regions still say region".into()),
+        )
+        .unwrap();
+        ed.set_instructions("put the logo next to the search box");
+        insta::assert_snapshot!(text(&ed), @r#"
+        paste2prompt edit list (user-authored)
+        Coordinates are % of image width/height. Edits refer to the original image.
+        Named regions can be referred to by name in the instructions and in your reply.
+        #1  label      "nav bar" (0%,0%)-(100%,8%)                               →  named "nav bar"
+        #2  translate  "logo" (12%,30%)-(40%,52%)                                →  move right 15%, up 4%
+        #3  rotate     "hero image" around (30%,20%) within (10%,10%)-(70%,40%)  →  rotate 90° clockwise about bounding-box center (40%,25%); also "keep it crisp"
+        #4  label      "search box" (60%,60%)-(80%,70%)                          →  named "search box"; also "leave as is"
+        #5  hint       region (30%,60%)-(40%,70%)                                →  "unnamed regions still say region"
+        Overall: put the logo next to the search box
+        "#);
+        let lines = caption_lines(ed.document());
+        assert_eq!(lines[2], CaptionLine::Header(NAMES_HEADER));
+        assert!(matches!(&lines[3], CaptionLine::Edit(e) if e.op == "label"));
+    }
+
+    #[test]
+    fn names_header_only_when_something_is_named() {
+        let mut ed = editor();
+        let a = ed
+            .add_edit(rect_region(0.1, 0.1, 0.2, 0.2), Op::Hint, Some("x".into()))
+            .unwrap();
+        assert!(!text(&ed).contains(NAMES_HEADER));
+        ed.set_name(a, Some("box".into())).unwrap();
+        assert_eq!(text(&ed).lines().nth(2), Some(NAMES_HEADER));
+        ed.set_name(a, None).unwrap();
+        assert!(!text(&ed).contains(NAMES_HEADER));
+    }
+
+    #[test]
+    fn name_quotes_cannot_break_out() {
+        let mut ed = editor();
+        ed.add_named_edit(
+            rect_region(0.1, 0.1, 0.2, 0.2),
+            Op::Label,
+            None,
+            Some(r#"the "big"   button"#.into()),
+        )
+        .unwrap();
+        let Some(CaptionLine::Edit(e)) = caption_lines(ed.document()).pop() else {
+            panic!("expected an edit row")
+        };
+        assert_eq!(e.region, r#""the 'big' button" (10%,10%)-(20%,20%)"#);
+        assert_eq!(e.description, r#"named "the 'big' button""#);
+        assert_eq!(e.region.matches('"').count(), 2);
     }
 }
