@@ -657,6 +657,9 @@ impl Controller {
             }
             Drag::Translate { id, start } => {
                 let (dx, dy) = size.delta_to_normalized(pos.0 - start.0, pos.1 - start.1);
+                // The core accepts at most a full image width/height; the
+                // pointer can go further over the canvas margin.
+                let (dx, dy) = (dx.clamp(-1.0, 1.0), dy.clamp(-1.0, 1.0));
                 s.editor.set_op(*id, Op::Translate { dx, dy })
             }
             Drag::Scale {
@@ -1027,6 +1030,20 @@ mod tests {
         assert_eq!(c.selected(), Some(id));
         assert!(c.undo());
         assert!(edits(&c).is_empty());
+    }
+
+    #[test]
+    fn translate_past_the_image_clamps_instead_of_cancelling() {
+        let mut c = loaded();
+        rect(&mut c);
+        // The canvas margin lets the pointer leave the 200 x 100 image; a
+        // translate is at most a full image width/height (core validates
+        // -1..=1), so the drag clamps there and stays live.
+        c.pointer_down(Pointer::at(40.0, 40.0));
+        c.pointer_move(Pointer::at(500.0, -300.0));
+        assert!(c.dragging());
+        c.pointer_up(Pointer::at(500.0, -300.0));
+        assert_eq!(edits(&c)[0].op(), &Op::Translate { dx: 1.0, dy: -1.0 });
     }
 
     #[test]
