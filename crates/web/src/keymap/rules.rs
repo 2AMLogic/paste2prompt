@@ -14,14 +14,16 @@
 //!   show. Matching on `code` alone would bind AZERTY's `,` key (where
 //!   QWERTY has `M`) and leave its labelled `M` key dead.
 //! - If `key` is a single letter from a non-Latin script (Cyrillic `щ`,
-//!   Greek `ο`, Hebrew `ם`, Arabic, kana, Hangul…, see [`non_latin_letter`])
-//!   or `"Unidentified"`, the letter comes from `KeyboardEvent.code`
+//!   Greek `ο`, Hebrew `ם`, Arabic, Khmer, kana, Hangul…: an allowlist of
+//!   scripts, see [`non_latin_letter`] and `NON_LATIN_BLOCKS` for why) or
+//!   `"Unidentified"`, the letter comes from `KeyboardEvent.code`
 //!   (`KeyO` → `o`), so `Ctrl+O`, `⌘Z`, `O` and the rest still work, on the
 //!   key that has the Latin letter printed on it on those keyboards.
 //! - Anything else never falls back (#53): a Latin letter outside ASCII
 //!   (Turkish F's `ı` on `KeyR`, BÉPO's `è` on `KeyT`) is the letter on that
 //!   key, not R or T; a symbol (Linux AltGr's `µ` on `KeyM`, `¶` on `KeyR`,
-//!   AZERTY's `,` on `KeyM`) is not a letter at all. Digits, punctuation and
+//!   AZERTY's `,` on `KeyM`) is not a letter at all, and neither is a
+//!   letterlike or circled character (`ℓ`, `ⓜ`). Digits, punctuation and
 //!   named keys never match a letter binding.
 //! - An event with AltGr held (`getModifierState("AltGraph")`) matches
 //!   nothing, like Alt: on Linux AltGr doesn't set `altKey`.
@@ -285,32 +287,70 @@ pub fn event_letter(key: &str, code: &str) -> Option<char> {
     }
 }
 
-/// The Unicode blocks of the common non-Latin scripts that keyboard layouts
-/// type (whose keys usually carry the Latin letter too): a key typing a
-/// letter from one of them stands for its physical position. Ranges are
-/// whole blocks; [`non_latin_letter`] keeps only their letters, so block
-/// punctuation (Greek `;`, Arabic `،`) and digits (Arabic-Indic `٣`) are
-/// excluded. Latin blocks (U+0080–U+024F, U+1E00–U+1EFF…) are deliberately
-/// absent, as are symbols.
+/// The Unicode blocks of the non-Latin scripts that keyboard layouts type
+/// (whose keys usually carry the Latin letter too): a key typing a letter
+/// from one of them stands for its physical position. Ranges are whole
+/// blocks; [`non_latin_letter`] keeps only their letters, so block
+/// punctuation (Greek `;`, Arabic `،`, Tibetan `༄`), digits (Arabic-Indic
+/// `٣`, Myanmar `၃`) and signs (Khmer `៛`) are excluded.
+///
+/// # Why an allowlist (#57)
+///
+/// The alternative, "alphabetic and not in a Latin block", would cover every
+/// non-Latin script, but `char::is_alphabetic` is also true for many things
+/// that are neither: letterlike symbols (`ℓ`, `K` U+212A), circled and
+/// parenthesized letters (`ⓜ`), Roman numerals (`Ⅿ`), fullwidth and
+/// mathematical Latin (`Ｍ`, `𝐦`), small capitals and superscripts (`ᴍ`,
+/// `ᵐ`), and Latin blocks added in later Unicode versions (Latin
+/// Extended-F/G). A denylist lets each one fall back to the physical key
+/// unless someone remembered to list its block, and a slip fires the wrong
+/// shortcut. With an allowlist, a missing block only leaves the shortcuts on
+/// that layout doing nothing, which is safe. So this list names every
+/// non-Latin script with a keyboard layout shipped by Windows, macOS or
+/// Linux. Latin blocks are deliberately absent, as are symbol blocks.
 const NON_LATIN_BLOCKS: &[(char, char)] = &[
-    ('\u{0370}', '\u{03FF}'), // Greek and Coptic
-    ('\u{0400}', '\u{052F}'), // Cyrillic, Cyrillic Supplement
-    ('\u{0530}', '\u{058F}'), // Armenian
-    ('\u{0590}', '\u{05FF}'), // Hebrew
-    ('\u{0600}', '\u{06FF}'), // Arabic (also Persian, Urdu)
-    ('\u{0900}', '\u{0DFF}'), // Indic: Devanagari to Sinhala
-    ('\u{0E00}', '\u{0EFF}'), // Thai, Lao
-    ('\u{10A0}', '\u{10FF}'), // Georgian
-    ('\u{1100}', '\u{11FF}'), // Hangul Jamo
-    ('\u{1F00}', '\u{1FFF}'), // Greek Extended
-    ('\u{3040}', '\u{30FF}'), // Hiragana, Katakana
-    ('\u{3130}', '\u{318F}'), // Hangul Compatibility Jamo (2-set Korean)
-    ('\u{4E00}', '\u{9FFF}'), // CJK Unified Ideographs
-    ('\u{AC00}', '\u{D7AF}'), // Hangul Syllables
+    ('\u{0370}', '\u{03FF}'),   // Greek and Coptic
+    ('\u{0400}', '\u{052F}'),   // Cyrillic, Cyrillic Supplement
+    ('\u{0530}', '\u{058F}'),   // Armenian
+    ('\u{0590}', '\u{05FF}'),   // Hebrew
+    ('\u{0600}', '\u{06FF}'),   // Arabic (also Persian, Urdu)
+    ('\u{0700}', '\u{074F}'),   // Syriac
+    ('\u{0750}', '\u{077F}'),   // Arabic Supplement
+    ('\u{0780}', '\u{07BF}'),   // Thaana (Dhivehi)
+    ('\u{07C0}', '\u{07FF}'),   // NKo
+    ('\u{08A0}', '\u{08FF}'),   // Arabic Extended-A
+    ('\u{0900}', '\u{0DFF}'),   // Indic: Devanagari to Sinhala
+    ('\u{0E00}', '\u{0EFF}'),   // Thai, Lao
+    ('\u{0F00}', '\u{0FFF}'),   // Tibetan (also Dzongkha)
+    ('\u{1000}', '\u{109F}'),   // Myanmar
+    ('\u{10A0}', '\u{10FF}'),   // Georgian
+    ('\u{1100}', '\u{11FF}'),   // Hangul Jamo
+    ('\u{1200}', '\u{139F}'),   // Ethiopic, Ethiopic Supplement
+    ('\u{13A0}', '\u{13FF}'),   // Cherokee
+    ('\u{1400}', '\u{167F}'),   // Unified Canadian Aboriginal Syllabics
+    ('\u{1780}', '\u{17FF}'),   // Khmer
+    ('\u{1800}', '\u{18AF}'),   // Mongolian (traditional)
+    ('\u{1950}', '\u{19DF}'),   // Tai Le, New Tai Lue
+    ('\u{1C50}', '\u{1C7F}'),   // Ol Chiki (Santali)
+    ('\u{1C90}', '\u{1CBF}'),   // Georgian Extended (Mtavruli)
+    ('\u{1F00}', '\u{1FFF}'),   // Greek Extended
+    ('\u{2D30}', '\u{2D7F}'),   // Tifinagh
+    ('\u{3040}', '\u{30FF}'),   // Hiragana, Katakana
+    ('\u{3100}', '\u{312F}'),   // Bopomofo (Zhuyin)
+    ('\u{3130}', '\u{318F}'),   // Hangul Compatibility Jamo (2-set Korean)
+    ('\u{4E00}', '\u{9FFF}'),   // CJK Unified Ideographs
+    ('\u{A4D0}', '\u{A4FF}'),   // Lisu
+    ('\u{A980}', '\u{A9DF}'),   // Javanese
+    ('\u{AB70}', '\u{ABBF}'),   // Cherokee Supplement (lowercase)
+    ('\u{AC00}', '\u{D7AF}'),   // Hangul Syllables
+    ('\u{104B0}', '\u{104FF}'), // Osage
+    ('\u{1E900}', '\u{1E95F}'), // Adlam
 ];
 
 /// Whether `c` is a letter from a non-Latin script ([`NON_LATIN_BLOCKS`]),
-/// so its key falls back to `KeyboardEvent.code` (module docs).
+/// so its key falls back to `KeyboardEvent.code` (module docs). Both tests
+/// must pass: the block says which script, `is_alphabetic` drops the
+/// block's punctuation, digits and symbols.
 pub fn non_latin_letter(c: char) -> bool {
     c.is_alphabetic()
         && NON_LATIN_BLOCKS
