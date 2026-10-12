@@ -41,7 +41,7 @@ pub use caption::{CAPTION_HEADER, Caption, CaptionLine, EditLine, caption_lines}
 pub use document::{Document, DocumentError, Edit, EditId, FORMAT_VERSION};
 pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};
-pub use op::{Anchor, Ghost, MirrorAxis, Op, OpError};
+pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};
 
 /// The product name, as shown in the UI and in the export caption header.
 pub const APP_NAME: &str = "paste2prompt";
