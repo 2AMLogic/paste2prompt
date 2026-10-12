@@ -316,30 +316,38 @@ pub fn ExportToolbar(exporter: Exporter) -> impl IntoView {
         <div class="export-toolbar" role="group" aria-label="Export" aria-busy=move || exporter.busy.get().to_string()>
             <button
                 type="button"
+                aria-label="Copy image"
                 aria-keyshortcuts=keymap::aria(KeyAction::CopyImage)
                 title=keymap::titled("Copy the export image", KeyAction::CopyImage)
                 disabled=disabled
                 on:click=move |_| exporter.run(Action::CopyImage)
             >
-                "Copy image"
+                // Narrow screens show the short label (style.css, "Header");
+                // aria-label keeps the full name either way.
+                <span class="label-full">"Copy image"</span>
+                <span class="label-short">"Copy"</span>
             </button>
             <button
                 type="button"
+                aria-label="Download PNG"
                 aria-keyshortcuts=keymap::aria(KeyAction::Download)
                 title=keymap::titled("Download the export PNG", KeyAction::Download)
                 disabled=disabled
                 on:click=move |_| exporter.run(Action::Download)
             >
-                "Download PNG"
+                <span class="label-full">"Download PNG"</span>
+                <span class="label-short">"Download"</span>
             </button>
             <button
                 type="button"
+                aria-label="Copy caption"
                 aria-keyshortcuts=keymap::aria(KeyAction::CopyCaption)
                 title=keymap::titled("Copy the caption as text", KeyAction::CopyCaption)
                 disabled=disabled
                 on:click=move |_| exporter.run(Action::CopyCaption)
             >
-                "Copy caption"
+                <span class="label-full">"Copy caption"</span>
+                <span class="label-short">"Caption"</span>
             </button>
             <span class="export-busy" hidden=move || !exporter.busy_label.get()>
                 "Rendering…"
