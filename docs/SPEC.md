@@ -170,10 +170,13 @@ chords:
 | `?` | Show the shortcut sheet |
 
 Letters match the character printed on the key, so on AZERTY or Dvorak
-`M` is the key labelled M. When a layout types a non-Latin character
-(Cyrillic, Greek, Hebrew…), the physical key decides instead
-(`KeyboardEvent.code`), so `Ctrl+O` is the key with O printed on it. `?`
-matches the typed character. The sheet shows ⌘ on macOS and Ctrl elsewhere.
+`M` is the key labelled M. When a layout types a letter from a non-Latin
+script (Cyrillic, Greek, Hebrew, Arabic, Korean, Japanese kana…), the
+physical key decides instead (`KeyboardEvent.code`), so `Ctrl+O` is the key
+with O printed on it. Latin letters outside ASCII (Turkish `ı`, BÉPO `è`)
+and symbols (Linux AltGr's `µ`) never fall back to the physical key, and
+nothing fires with AltGr held. `?` matches the typed character, and holding
+it doesn't toggle the sheet. The sheet shows ⌘ on macOS and Ctrl elsewhere.
 
 ## Architecture
 
