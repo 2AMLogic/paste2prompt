@@ -424,7 +424,7 @@ fn rejects_bad_input() {
 #[test]
 fn extreme_but_valid_documents_render() {
     // A 1-pixel-wide, tall image; edits whose ghosts land far outside the
-    // image; a huge scale; many edits with two-digit numbers; a long hint
+    // image; the largest scale; many edits with two-digit numbers; a long hint
     // word that has to wrap mid-word.
     let image = test_image(1, 3000);
     let mut ed = Editor::new(size_of(&image));
@@ -433,7 +433,7 @@ fn extreme_but_valid_documents_render() {
         let y = f64::from(i) / 25.0;
         let op = match i % 4 {
             0 => far,
-            1 => Op::uniform_scale(1000.0),
+            1 => Op::uniform_scale(crate::MAX_SCALE),
             2 => Op::Rotate {
                 degrees: 7200.0,
                 anchor: Anchor::Point(pt(0.0, 1.0)),

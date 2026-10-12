@@ -38,7 +38,7 @@ use std::fmt;
 
 use tiny_skia::{FillRule, Mask, PathBuilder, Pixmap, Transform};
 
-use crate::caption::{CaptionLine, EditLine, caption_lines};
+use crate::caption::{ARROW, CaptionLine, EditLine, OVERALL_PREFIX, caption_lines};
 use crate::document::Document;
 use crate::geometry::ImageSize;
 use marks::{Badge, MarkScale, Marks, badge_width, draw_badge};
@@ -418,7 +418,7 @@ fn layout_band(text: &mut Text, lines: &[CaptionLine], width: f32) -> Band {
     let fixed = badge_col + op_w + gap + region_w + gap + arrow_w + gap;
     let columns = fixed <= inner * 0.6;
 
-    let overall_w = text.measure(OVERALL_LABEL, bold);
+    let overall_w = text.measure(OVERALL_PREFIX.trim_end(), bold);
     let overall_col = overall_w + text.measure(" ", regular);
 
     let mut items = Vec::new();
@@ -496,7 +496,7 @@ fn layout_band(text: &mut Text, lines: &[CaptionLine], width: f32) -> Band {
                 if matches!(line, CaptionLine::Overall(_)) {
                     y += f * 0.2;
                     items.push(Item::Text {
-                        block: text.layout(OVERALL_LABEL, bold, None),
+                        block: text.layout(OVERALL_PREFIX.trim_end(), bold, None),
                         x: pad,
                         y,
                         rgb: INK,
@@ -520,12 +520,6 @@ fn layout_band(text: &mut Text, lines: &[CaptionLine], width: f32) -> Band {
         rule,
     }
 }
-
-/// The arrow between an edit's region and its description.
-const ARROW: &str = "→";
-
-/// The bold label in front of the image-level instructions.
-const OVERALL_LABEL: &str = "Overall:";
 
 #[cfg(test)]
 mod tests;
