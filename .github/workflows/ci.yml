@@ -28,15 +28,18 @@ jobs:
   rust:
     name: fmt, clippy, test, trunk build
     runs-on: ubuntu-latest
+    # A warm run takes about 3 minutes and a cold one (no rust-cache) well
+    # under 15. The cap stops a hung step burning the 360-minute default.
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Installs the toolchain, components and wasm target pinned in
       # rust-toolchain.toml.
       - name: Install pinned toolchain
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -50,7 +53,16 @@ jobs:
       - name: core builds for wasm32 without web-sys
         run: |
           cargo check -p paste2prompt-core --target wasm32-unknown-unknown
-          if cargo tree -p paste2prompt-core -e normal --target wasm32-unknown-unknown | grep -qE '\b(web-sys|js-sys|wasm-bindgen)\b'; then
+          # Fail closed. Piping cargo tree into grep would pass if cargo tree
+          # errored (grep sees no input), and pipefail is no fix: grep -q
+          # exits on the first match, cargo tree takes SIGPIPE, and a match
+          # reads as a pass. So capture the tree first, failing if cargo tree
+          # fails, then grep the captured text.
+          if ! tree="$(cargo tree -p paste2prompt-core -e normal --target wasm32-unknown-unknown)"; then
+            echo "::error::cargo tree failed, so the core-independence check could not run"
+            exit 1
+          fi
+          if grep -qE '\b(web-sys|js-sys|wasm-bindgen)\b' <<<"$tree"; then
             echo "::error::crates/core must not depend on web-sys, js-sys or wasm-bindgen"
             exit 1
           fi
@@ -65,7 +77,7 @@ jobs:
           trunk --version
 
       # trunk downloads matching wasm-bindgen and wasm-opt binaries here.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/trunk
           key: trunk-tools-${{ env.TRUNK_VERSION }}-${{ hashFiles('Cargo.lock') }}
@@ -75,11 +87,42 @@ jobs:
         working-directory: crates/web
         run: trunk build --release
 
+      # CLAUDE.md rule 1: no network requests after load. Writes the CSP into
+      # dist/_headers, then scans the built bundle (JS glue, inline scripts,
+      # wasm imports), the crates/web sources and the CSP itself.
+      - name: privacy guard
+        run: |
+          python3 scripts/write_headers.py dist
+          python3 scripts/privacy_check.py --dist dist --web-crate crates/web
+
+      # Validates wrangler.jsonc and the asset upload without credentials.
+      # Its build step reruns trunk (cached) and the privacy guard. wrangler
+      # and its whole dependency tree are pinned by package-lock.json.
+      - name: Install wrangler (npm ci)
+        run: npm ci --no-audit --no-fund
+
+      - name: wrangler deploy --dry-run
+        run: npx --no-install wrangler deploy --dry-run
+        env:
+          WRANGLER_SEND_METRICS: "false"
+
+  privacy-guard-tests:
+    name: privacy guard tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Regression tests for scripts/privacy_check.py against fake dist/
+      # trees (no build needed), including every bypass found in review.
+      - name: test_privacy_check.py
+        run: python3 -B scripts/test_privacy_check.py
+
   licenses:
     name: dependency licenses
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check licenses

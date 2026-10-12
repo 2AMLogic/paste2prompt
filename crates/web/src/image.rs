@@ -28,6 +28,7 @@
 //!   been given (see `input`).
 
 use leptos::prelude::*;
+use paste2prompt_core::RgbaImage;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Blob, CanvasRenderingContext2d, HtmlCanvasElement, ImageBitmap};
@@ -64,11 +65,7 @@ impl LoadedImage {
     }
 
     /// Copy the pixels out as straight (non-premultiplied) RGBA8, row-major,
-    /// top-left origin.
-    #[expect(
-        dead_code,
-        reason = "API for the export path; first caller lands with #10"
-    )]
+    /// top-left origin: the core's [`RgbaImage`], ready for `render_export`.
     pub fn to_rgba(&self) -> Result<RgbaImage, JsValue> {
         let document = window().document().ok_or("no document")?;
         let canvas: HtmlCanvasElement = document.create_element("canvas")?.unchecked_into();
@@ -90,18 +87,6 @@ impl LoadedImage {
             pixels,
         })
     }
-}
-
-/// Full-resolution pixels: `pixels.len() == width * height * 4`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[expect(
-    dead_code,
-    reason = "API for the export path; first caller lands with #10"
-)]
-pub struct RgbaImage {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<u8>,
 }
 
 /// Why an image could not be loaded. `Display` is a user-facing message.
