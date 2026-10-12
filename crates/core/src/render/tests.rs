@@ -1,0 +1,477 @@
+//! Export renderer tests, including golden images.
+//!
+//! Goldens live in `crates/core/tests/golden/`. To regenerate them after an
+//! intended change to the export's look, run
+//! `UPDATE_GOLDENS=1 cargo test -p paste2prompt-core render` and review the
+//! new PNGs before committing them.
+
+use std::path::PathBuf;
+
+use super::*;
+use crate::{Anchor, Editor, MirrorAxis, Op, Point, Region};
+
+/// A deterministic test image: a diagonal gradient with a few flat
+/// "UI" blocks, so marks are tested over light, dark and mid tones.
+fn test_image(width: u32, height: u32) -> RgbaImage {
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let (fx, fy) = (x as f32 / width as f32, y as f32 / height as f32);
+            let mut px = [
+                (40.0 + 200.0 * fx) as u8,
+                (60.0 + 160.0 * fy) as u8,
+                (220.0 - 120.0 * fx * fy) as u8,
+                255,
+            ];
+            if (0.1..0.45).contains(&fx) && (0.15..0.5).contains(&fy) {
+                px = [250, 250, 250, 255];
+            }
+            if (0.55..0.9).contains(&fx) && (0.6..0.85).contains(&fy) {
+                px = [24, 26, 30, 255];
+            }
+            pixels.extend_from_slice(&px);
+        }
+    }
+    RgbaImage {
+        width,
+        height,
+        pixels,
+    }
+}
+
+fn pt(x: f64, y: f64) -> Point {
+    Point::new(x, y)
+}
+
+fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Region {
+    Region::rect(pt(x0, y0), pt(x1, y1)).unwrap()
+}
+
+fn size_of(image: &RgbaImage) -> ImageSize {
+    ImageSize::new(image.width, image.height).unwrap()
+}
+
+/// A narrow image (padded to the minimum width) with translate, rotate and a
+/// lasso hint, as in the spec's example caption.
+fn fixture_basic() -> (RgbaImage, Document) {
+    let image = test_image(400, 260);
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_edit(
+        rect(0.12, 0.30, 0.40, 0.52),
+        Op::Translate {
+            dx: 0.15,
+            dy: -0.04,
+        },
+        None,
+    )
+    .unwrap();
+    ed.add_edit(
+        rect(0.60, 0.10, 0.80, 0.25),
+        Op::Rotate {
+            degrees: 90.0,
+            anchor: Anchor::Center,
+        },
+        None,
+    )
+    .unwrap();
+    ed.add_edit(
+        Region::polygon([
+            pt(0.45, 0.62),
+            pt(0.58, 0.66),
+            pt(0.55, 0.80),
+            pt(0.42, 0.76),
+        ])
+        .unwrap(),
+        Op::Hint,
+        Some("make this button red".into()),
+    )
+    .unwrap();
+    ed.set_instructions("tighten the spacing between the cards");
+    (image, ed.into_document())
+}
+
+/// A wider image with every op: scale, both mirrors, a translate whose ghost
+/// leaves the image, a rotated lasso, a hint on a translate, and multi-line
+/// instructions with non-ASCII text.
+fn fixture_all_ops() -> (RgbaImage, Document) {
+    let image = test_image(960, 600);
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_edit(
+        rect(0.10, 0.15, 0.30, 0.35),
+        Op::Scale {
+            sx: 1.5,
+            sy: 1.5,
+            anchor: Anchor::Center,
+        },
+        None,
+    )
+    .unwrap();
+    ed.add_edit(
+        rect(0.40, 0.10, 0.55, 0.40),
+        Op::Mirror {
+            axis: MirrorAxis::Horizontal,
+        },
+        None,
+    )
+    .unwrap();
+    ed.add_edit(
+        rect(0.62, 0.12, 0.92, 0.30),
+        Op::Mirror {
+            axis: MirrorAxis::Vertical,
+        },
+        None,
+    )
+    .unwrap();
+    ed.add_edit(
+        rect(0.70, 0.55, 0.95, 0.75),
+        Op::Translate { dx: 0.20, dy: 0.10 },
+        Some("and make it blue".into()),
+    )
+    .unwrap();
+    ed.add_edit(
+        Region::polygon([
+            pt(0.15, 0.6),
+            pt(0.35, 0.55),
+            pt(0.40, 0.85),
+            pt(0.20, 0.90),
+        ])
+        .unwrap(),
+        Op::Rotate {
+            degrees: -30.0,
+            anchor: Anchor::Center,
+        },
+        None,
+    )
+    .unwrap();
+    ed.set_instructions("Keep the header.\nRenommer « Größe » en Ελληνικά — Привет");
+    (image, ed.into_document())
+}
+
+/// No edits and no instructions: just the header.
+fn fixture_empty() -> (RgbaImage, Document) {
+    let image = test_image(720, 120);
+    let doc = Document::new(size_of(&image));
+    (image, doc)
+}
+
+/// A half-transparent image, which must be composited over white.
+fn fixture_transparent() -> (RgbaImage, Document) {
+    let mut image = test_image(160, 160);
+    for (i, px) in image.pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        px[3] = if (i / 160) < 80 { 0 } else { 128 };
+    }
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_edit(
+        rect(0.0, 0.0, 1.0, 1.0),
+        Op::Hint,
+        Some("fill the transparent half".into()),
+    )
+    .unwrap();
+    (image, ed.into_document())
+}
+
+fn rgb_of(pixmap: &Pixmap) -> Vec<u8> {
+    pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| [p[0], p[1], p[2]])
+        .collect()
+}
+
+fn golden_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(format!("{name}.png"))
+}
+
+fn decode_png(bytes: &[u8]) -> (u32, u32, png::ColorType, Vec<u8>) {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().unwrap();
+    let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut buf).unwrap();
+    buf.truncate(info.buffer_size());
+    (info.width, info.height, info.color_type, buf)
+}
+
+/// Per-channel difference under which two pixels count as equal; absorbs
+/// anti-aliasing differences between SIMD backends (CI is x86_64, dev machines
+/// may be aarch64).
+const CHANNEL_TOLERANCE: u8 = 24;
+/// Share of pixels allowed to differ by more than the channel tolerance.
+const PIXEL_TOLERANCE: f64 = 0.002;
+
+fn check_golden(name: &str, (image, doc): (RgbaImage, Document)) {
+    let png = render_export(&image, &doc).unwrap();
+    let path = golden_path(name);
+    if std::env::var_os("UPDATE_GOLDENS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        return;
+    }
+    let golden = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "missing golden {} ({e}); run with UPDATE_GOLDENS=1",
+            path.display()
+        )
+    });
+    let (gw, gh, _, want) = decode_png(&golden);
+    let (w, h, _, got) = decode_png(&png);
+    assert_eq!((w, h), (gw, gh), "{name}: export size changed");
+    let differing = got
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(want.as_chunks::<3>().0.iter())
+        .filter(|(a, b)| {
+            a.iter()
+                .zip(b.iter())
+                .any(|(x, y)| x.abs_diff(*y) > CHANNEL_TOLERANCE)
+        })
+        .count();
+    let share = differing as f64 / f64::from(w * h);
+    assert!(
+        share <= PIXEL_TOLERANCE,
+        "{name}: {differing} pixels ({:.3}%) differ from {}; if intended, rerun with UPDATE_GOLDENS=1",
+        share * 100.0,
+        path.display()
+    );
+}
+
+#[test]
+fn golden_basic() {
+    check_golden("basic", fixture_basic());
+}
+
+#[test]
+fn golden_all_ops() {
+    check_golden("all_ops", fixture_all_ops());
+}
+
+#[test]
+fn golden_empty() {
+    check_golden("empty", fixture_empty());
+}
+
+#[test]
+fn golden_transparent() {
+    check_golden("transparent", fixture_transparent());
+}
+
+#[test]
+fn rendering_is_deterministic() {
+    let (image, doc) = fixture_all_ops();
+    assert_eq!(
+        render_export(&image, &doc).unwrap(),
+        render_export(&image, &doc).unwrap()
+    );
+}
+
+/// Walks the PNG chunk list.
+fn chunk_types(png: &[u8]) -> Vec<String> {
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    let mut types = Vec::new();
+    let mut i = 8;
+    while i + 8 <= png.len() {
+        let len = u32::from_be_bytes(png[i..i + 4].try_into().unwrap()) as usize;
+        types.push(String::from_utf8_lossy(&png[i + 4..i + 8]).into_owned());
+        i += 12 + len;
+    }
+    types
+}
+
+#[test]
+fn output_is_plain_opaque_rgb_png_without_text_chunks() {
+    let (image, doc) = fixture_basic();
+    let png = render_export(&image, &doc).unwrap();
+    let types = chunk_types(&png);
+    assert_eq!(types.first().map(String::as_str), Some("IHDR"));
+    assert_eq!(types.last().map(String::as_str), Some("IEND"));
+    assert!(
+        types
+            .iter()
+            .all(|t| t == "IHDR" || t == "IDAT" || t == "IEND"),
+        "unexpected chunks: {types:?}"
+    );
+    let (_, _, color, _) = decode_png(&png);
+    assert_eq!(color, png::ColorType::Rgb);
+}
+
+#[test]
+fn narrow_images_are_padded_and_wide_ones_keep_their_width() {
+    let (image, doc) = fixture_basic();
+    let p = render_pixmap(&image, &doc).unwrap();
+    assert_eq!(p.width(), MIN_EXPORT_WIDTH);
+    assert!(p.height() > image.height);
+    // The image is centered: its first pixel sits after the left padding.
+    let ox = (MIN_EXPORT_WIDTH - image.width) / 2;
+    let px = p.pixel(ox, 0).unwrap();
+    assert_eq!([px.red(), px.green(), px.blue()], [40, 60, 220]);
+    let pad = p.pixel(0, 0).unwrap();
+    assert_eq!([pad.red(), pad.green(), pad.blue()], PADDING_BG);
+
+    let (image, doc) = fixture_all_ops();
+    assert_eq!(render_pixmap(&image, &doc).unwrap().width(), image.width);
+}
+
+#[test]
+fn original_pixels_survive_outside_the_marks() {
+    let (image, doc) = fixture_all_ops();
+    let p = render_pixmap(&image, &doc).unwrap();
+    // Bottom-right corner of the image: no mark near it.
+    let (x, y) = (image.width - 2, image.height - 2);
+    let i = ((y * image.width + x) * 4) as usize;
+    let px = p.pixel(x, y).unwrap();
+    assert_eq!(
+        [px.red(), px.green(), px.blue()],
+        [image.pixels[i], image.pixels[i + 1], image.pixels[i + 2]]
+    );
+}
+
+#[test]
+fn outline_and_caption_badge_use_the_edit_color() {
+    let (image, doc) = fixture_all_ops();
+    let p = render_pixmap(&image, &doc).unwrap();
+    let rgb = rgb_of(&p);
+    let w = p.width() as usize;
+    let count = |color: [u8; 3], rows: std::ops::Range<u32>| {
+        rows.flat_map(|y| (0..p.width()).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let i = (y as usize * w + x as usize) * 3;
+                rgb[i..i + 3] == color
+            })
+            .count()
+    };
+    for n in 1..=doc.edits().len() {
+        let c = mark_color(n);
+        assert!(
+            count(c, 0..image.height) > 50,
+            "edit #{n} has no outline in its color"
+        );
+        assert!(
+            count(c, image.height..p.height()) > 50,
+            "edit #{n} has no caption badge in its color"
+        );
+    }
+    // Red first, then distinct colors.
+    assert_eq!(mark_color(1), [222, 25, 35]);
+    assert_ne!(mark_color(1), mark_color(2));
+    assert_eq!(mark_color(1), mark_color(PALETTE.len() + 1));
+    assert_eq!(mark_color(0), mark_color(1));
+}
+
+#[test]
+fn transparent_pixels_become_white() {
+    let (image, doc) = fixture_transparent();
+    let p = render_pixmap(&image, &doc).unwrap();
+    let ox = (p.width() - image.width) / 2;
+    let px = p.pixel(ox + 80, 40).unwrap();
+    assert_eq!(
+        [px.red(), px.green(), px.blue(), px.alpha()],
+        [255, 255, 255, 255]
+    );
+}
+
+#[test]
+fn rejects_bad_input() {
+    let (image, doc) = fixture_basic();
+
+    let mut short = image.clone();
+    short.pixels.pop();
+    assert!(matches!(
+        render_export(&short, &doc),
+        Err(RenderError::PixelBufferSize { .. })
+    ));
+
+    let other = test_image(401, 260);
+    assert!(matches!(
+        render_export(&other, &doc),
+        Err(RenderError::SizeMismatch { .. })
+    ));
+
+    let empty = RgbaImage {
+        width: 0,
+        height: 10,
+        pixels: Vec::new(),
+    };
+    assert_eq!(render_export(&empty, &doc), Err(RenderError::EmptyImage));
+
+    // Rejected on its dimensions alone, before anything is allocated.
+    let huge = RgbaImage {
+        width: 10_000,
+        height: 5_000,
+        pixels: Vec::new(),
+    };
+    let huge_doc = Document::new(ImageSize::new(10_000, 5_000).unwrap());
+    assert!(matches!(
+        render_export(&huge, &huge_doc),
+        Err(RenderError::TooLarge { .. })
+    ));
+    let long = RgbaImage {
+        width: 1,
+        height: MAX_EXPORT_SIDE + 1,
+        pixels: Vec::new(),
+    };
+    let long_doc = Document::new(ImageSize::new(1, MAX_EXPORT_SIDE + 1).unwrap());
+    assert!(matches!(
+        render_export(&long, &long_doc),
+        Err(RenderError::TooLarge { .. })
+    ));
+    assert!(!RenderError::EmptyImage.to_string().is_empty());
+}
+
+#[test]
+fn extreme_but_valid_documents_render() {
+    // A 1-pixel-wide, tall image; edits whose ghosts land far outside the
+    // image; a huge scale; many edits with two-digit numbers; a long hint
+    // word that has to wrap mid-word.
+    let image = test_image(1, 3000);
+    let mut ed = Editor::new(size_of(&image));
+    let far = Op::Translate { dx: 1.0, dy: -1.0 };
+    for i in 0..24 {
+        let y = f64::from(i) / 25.0;
+        let op = match i % 4 {
+            0 => far,
+            1 => Op::uniform_scale(1000.0),
+            2 => Op::Rotate {
+                degrees: 7200.0,
+                anchor: Anchor::Point(pt(0.0, 1.0)),
+            },
+            _ => Op::Mirror {
+                axis: MirrorAxis::Vertical,
+            },
+        };
+        ed.add_edit(rect(0.0, y, 1.0, y + 0.03), op, Some("x".repeat(300)))
+            .unwrap();
+    }
+    ed.set_instructions("y".repeat(2000));
+    let doc = ed.into_document();
+    let png = render_export(&image, &doc).unwrap();
+    let (w, h, _, _) = decode_png(&png);
+    assert_eq!(w, MIN_EXPORT_WIDTH);
+    assert!(h > 3000);
+}
+
+#[test]
+fn caption_rows_stack_when_columns_do_not_fit() {
+    // At the minimum width a lasso region string is too wide for columns;
+    // at 3000 px it fits. Both must lay out without overlap.
+    let (_, doc) = fixture_basic();
+    let lines = caption_lines(&doc);
+    let mut text = Text::new();
+    let narrow = layout_band(&mut text, &lines, MIN_EXPORT_WIDTH as f32);
+    let wide = layout_band(&mut text, &lines, 3000.0);
+    assert!(narrow.height > 0.0 && wide.height > 0.0);
+    for band in [&narrow, &wide] {
+        let mut last_bottom = 0.0f32;
+        for item in &band.items {
+            if let Item::Text { block, y, x, .. } = item {
+                assert!(*x >= 0.0);
+                assert!(*y + 0.5 >= last_bottom.min(*y), "text goes backwards");
+                last_bottom = last_bottom.max(*y + block.height);
+            }
+        }
+        assert!(last_bottom <= band.height);
+    }
+}
