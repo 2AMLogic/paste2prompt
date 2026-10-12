@@ -104,7 +104,7 @@ fn App() -> impl IntoView {
             </Show>
             <section class="canvas-panel" hidden=empty>
                 <CanvasToolbar />
-                <div class="workspace">
+                <div node_ref=canvas.workspace class=move || canvas.arrangement.get().class()>
                     <div class="workspace-main">
                         <CanvasView image />
                         <InstructionsBox />

@@ -7,7 +7,10 @@
 //! - [`geom`]: hit-testing, capped lasso simplification and handle math (tested
 //!   natively).
 //! - `view`: image-pixel / screen-pixel mapping.
-//! - `layout`: redraw triggers for size and device-pixel-ratio changes.
+//! - [`arrange`]: the stage size that hugs the image, and whether the
+//!   history panel goes beside or below (tested natively).
+//! - `layout`: re-layout triggers for size and device-pixel-ratio changes,
+//!   and the DOM measuring behind `arrange`.
 //! - [`colors`]: per-edit colors from the export's palette, shared with
 //!   the history panel (tested natively).
 //! - `render`: Canvas2D drawing.
@@ -33,6 +36,7 @@
 //!   image needs a confirmation" signal; a new `ImageStore::current()` value
 //!   starts a new session.
 
+pub mod arrange;
 pub mod colors;
 pub mod controller;
 pub mod geom;
@@ -44,19 +48,17 @@ mod view;
 use leptos::html;
 use leptos::logging::warn;
 use leptos::prelude::*;
-use paste2prompt_core::{EditError, EditId, MAX_NAME_CHARS, MirrorAxis};
+use paste2prompt_core::{EditError, EditId, ImageSize, MAX_NAME_CHARS, MirrorAxis};
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, PointerEvent};
 
+pub use arrange::Arrangement;
+use arrange::Chrome;
 pub use controller::{Controller, Cursor, OpKind, Pointer, Tool, name_message};
 pub use source::SourceImage;
 use view::ViewTransform;
 
 use crate::keymap::{self, rules::Action};
-
-/// Margin around the fitted image, in CSS pixels. Leaves room for badges
-/// and handles at the image edge.
-const VIEW_MARGIN: f64 = 24.0;
 
 /// Shared canvas state, provided once by `App`.
 #[derive(Clone, Copy)]
@@ -71,6 +73,12 @@ pub struct CanvasState {
     /// (e.g. a duplicate), shown under the field until the next valid name,
     /// blur, or another selection.
     pub name_error: RwSignal<Option<(EditId, String)>>,
+    /// The `.workspace` element (canvas column plus history panel), which
+    /// the canvas measures to size itself (#69).
+    pub workspace: NodeRef<html::Div>,
+    /// Where the history panel sits, chosen by the canvas from the image's
+    /// shape; `App` puts [`Arrangement::class`] on the workspace.
+    pub arrangement: RwSignal<Arrangement>,
 }
 
 impl CanvasState {
@@ -81,6 +89,8 @@ impl CanvasState {
             hint_input: NodeRef::new(),
             name_input: NodeRef::new(),
             name_error: RwSignal::new(None),
+            workspace: NodeRef::new(),
+            arrangement: RwSignal::new(Arrangement::default()),
         };
         provide_context(state);
         state
@@ -147,18 +157,28 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
     let view_store = StoredValue::new(None::<ViewTransform>);
     let active = StoredValue::new(None::<i32>);
     let cursor = RwSignal::new(Cursor::Default);
-    // Bumped to redraw when the layout changes.
+    // Bumped to re-lay out and redraw when the space changes.
     let relayout = RwSignal::new(0_u32);
     let bump = move || relayout.update(|n| *n = n.wrapping_add(1));
+    // The relayout count and image size the stage was last sized for.
+    let laid_out = StoredValue::new(None::<(u32, ImageSize)>);
 
-    // Any change to the canvas's CSS size (window resize, the panel
-    // un-hiding, a scrollbar appearing) or to the device pixel ratio
-    // (zoom, another monitor) re-sizes the backing store and re-fits the
-    // view on the next draw.
+    // Any change to the space (window resize, the panel un-hiding, a
+    // scrollbar appearing, the instructions box resized) or to the device
+    // pixel ratio (zoom, another monitor) re-sizes the stage and its
+    // backing store and re-fits the view on the next draw.
+    let resize = window_event_listener(leptos::ev::resize, move |_| bump());
+    on_cleanup(move || resize.remove());
     canvas_ref.on_load(move |canvas| {
         let canvas: &web_sys::Element = &canvas;
         let mut targets = vec![canvas.clone()];
         targets.extend(canvas.parent_element());
+        targets.extend(
+            state
+                .workspace
+                .get_untracked()
+                .map(|w| web_sys::Element::clone(&w)),
+        );
         let targets: Vec<&web_sys::Element> = targets.iter().collect();
         // Local (not Send) storage; disposing it drops the watches, which
         // disconnects the observer and removes the media listener.
@@ -179,21 +199,56 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
         });
     });
 
-    // Draw whenever the document, selection, drag or layout changes.
+    // Draw whenever the document, selection, drag or layout changes. A new
+    // image or a layout change first re-sizes the stage to hug the image
+    // (`arrange`), synchronously, so this frame already measures the new
+    // size: the view, and with it hit-testing, is fitted to the stage as
+    // it is now, never as it was.
     Effect::new(move |_| {
-        relayout.track();
+        let generation = relayout.get();
         let Some(img) = image.get() else { return };
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
-        let rect = canvas.get_bounding_client_rect();
-        let (w, h) = (rect.width(), rect.height());
+        let Some(size) = img.size() else { return };
+        let last = laid_out.get_value();
+        if last != Some((generation, size)) {
+            let space = state
+                .workspace
+                .get_untracked()
+                .and_then(|ws| layout::measure_space(&ws, &canvas));
+            let Some(space) = space else {
+                // Not laid out yet (just un-hidden): try again next frame.
+                request_animation_frame(bump);
+                return;
+            };
+            // Hysteresis against the arrangement on screen, unless this is
+            // a new image.
+            let current = last
+                .filter(|(_, s)| *s == size)
+                .map(|_| state.arrangement.get_untracked());
+            let fitted = arrange::choose_layout(
+                size.width(),
+                size.height(),
+                space,
+                Chrome::DEFAULT,
+                current,
+            );
+            layout::size_stage(&canvas, fitted.stage_w, fitted.stage_h);
+            if state.arrangement.get_untracked() != fitted.arrangement {
+                state.arrangement.set(fitted.arrangement);
+            }
+            laid_out.set_value(Some((generation, size)));
+        }
+        // The content box, inside the border: what the canvas draws into.
+        let (w, h) = (
+            f64::from(canvas.client_width()),
+            f64::from(canvas.client_height()),
+        );
         if w < 1.0 || h < 1.0 {
-            // Not laid out yet (just un-hidden): try again next frame.
-            request_animation_frame(move || relayout.update(|n| *n = n.wrapping_add(1)));
+            request_animation_frame(bump);
             return;
         }
-        let Some(size) = img.size() else { return };
         let dpr = window().device_pixel_ratio().max(1.0);
         let (bw, bh) = ((w * dpr).round() as u32, (h * dpr).round() as u32);
         if canvas.width() != bw {
@@ -215,7 +270,8 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
             f64::from(size.height()),
             w,
             h,
-            VIEW_MARGIN,
+            Chrome::DEFAULT.margin,
+            arrange::max_scale(size.width(), size.height()),
         );
         view_store.set_value(Some(view));
         ctrl.update_untracked(|c| c.set_view_scale(view.scale));
@@ -232,10 +288,12 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
     let to_pointer = move |ev: &PointerEvent| -> Option<Pointer> {
         let canvas = canvas_ref.get_untracked()?;
         let view = view_store.get_value()?;
+        // Relative to the content box (inside the border), the box the view
+        // was fitted to.
         let rect = canvas.get_bounding_client_rect();
         let screen = (
-            f64::from(ev.client_x()) - rect.left(),
-            f64::from(ev.client_y()) - rect.top(),
+            f64::from(ev.client_x()) - rect.left() - f64::from(canvas.client_left()),
+            f64::from(ev.client_y()) - rect.top() - f64::from(canvas.client_top()),
         );
         Some(Pointer {
             pos: view.to_image(screen),

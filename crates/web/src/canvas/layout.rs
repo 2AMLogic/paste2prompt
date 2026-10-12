@@ -1,10 +1,13 @@
-//! Layout watchers: tell the canvas to redraw when its CSS size or the
-//! device pixel ratio changes, so the backing store and the
-//! screen-to-image mapping never go stale.
+//! Layout watchers: tell the canvas to re-lay out and redraw when its
+//! space or the device pixel ratio changes, so the stage size, the backing
+//! store and the screen-to-image mapping never go stale. Also the DOM side
+//! of `arrange`: measuring the space and sizing the stage.
 //!
-//! - A `ResizeObserver` on the canvas and its container catches every
-//!   size change: a window resize, the panel un-hiding, a classic
-//!   scrollbar appearing.
+//! - A `ResizeObserver` on the canvas, its column and the workspace catches
+//!   every size change: a window resize, the panel un-hiding, a classic
+//!   scrollbar appearing, the instructions box being resized. (A window
+//!   that only gets taller changes none of these; the canvas view listens
+//!   for the window's `resize` event for that.)
 //! - A `matchMedia("(resolution: <dpr>dppx)")` listener catches a DPR
 //!   change (browser zoom, or the window moving to another monitor). The
 //!   query only matches the current DPR, so it is re-armed with the new
@@ -19,7 +22,60 @@ use leptos::logging::warn;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::{Element, MediaQueryList, ResizeObserver};
+use web_sys::{Element, HtmlElement, MediaQueryList, ResizeObserver};
+
+use super::arrange::Space;
+
+/// The page's bottom padding (`body { padding: 1rem }`), kept free under
+/// the canvas column.
+const PAGE_BOTTOM: f64 = 16.0;
+
+/// Measures the space the workspace has, from the workspace and the stage
+/// (whose parent is the canvas column). `None` while the workspace isn't
+/// laid out (hidden).
+pub fn measure_space(workspace: &Element, stage: &Element) -> Option<Space> {
+    let window = window();
+    let ws = workspace.get_bounding_client_rect();
+    if ws.width() < 1.0 {
+        return None;
+    }
+    let viewport_h = document().document_element().map_or_else(
+        || {
+            window
+                .inner_height()
+                .ok()
+                .and_then(|h| h.as_f64())
+                .unwrap_or(0.0)
+        },
+        |e| f64::from(e.client_height()),
+    );
+    // Page coordinates, so the result doesn't depend on the scroll position.
+    let top = ws.top() + window.scroll_y().unwrap_or(0.0);
+    let stage_h = stage.get_bounding_client_rect().height();
+    let under_stage = stage.parent_element().map_or(0.0, |column| {
+        (column.get_bounding_client_rect().height() - stage_h).max(0.0)
+    });
+    Some(Space {
+        width: ws.width().floor(),
+        height: (viewport_h - top - PAGE_BOTTOM).floor(),
+        under_stage: under_stage.ceil(),
+    })
+}
+
+/// Sets the stage's CSS content size, in whole CSS pixels. Through the
+/// CSSOM, which the CSP (`style-src 'self'`) allows, unlike a `style`
+/// attribute in markup.
+pub fn size_stage(stage: &HtmlElement, width: u32, height: u32) {
+    let style = stage.style();
+    for (prop, len) in [("width", width), ("height", height)] {
+        let value = format!("{len}px");
+        if style.get_property_value(prop).ok().as_deref() != Some(value.as_str())
+            && let Err(e) = style.set_property(prop, &value)
+        {
+            warn!("stage {prop} not set: {e:?}");
+        }
+    }
+}
 
 /// Observes `targets` for size changes, calling `on_change` for each.
 /// Stops when dropped.
