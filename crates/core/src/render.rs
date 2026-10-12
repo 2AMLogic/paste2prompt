@@ -346,7 +346,9 @@ impl Band {
     fn draw(&mut self, pixmap: &mut Pixmap, text: &mut Text, top: f32) {
         for item in &mut self.items {
             match item {
-                Item::Text { block, x, y, rgb } => text.draw(block, pixmap, *x, top + *y, *rgb),
+                Item::Text { block, x, y, rgb } => {
+                    text.draw(block, pixmap, None, (*x, top + *y), *rgb)
+                }
                 Item::Badge {
                     number,
                     center,

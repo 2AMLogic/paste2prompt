@@ -357,7 +357,7 @@ pub(super) fn draw_badge(pixmap: &mut Pixmap, text: &mut Text, clip: Option<&Mas
     }
     let x = cx - label.width / 2.0;
     let y = cy - label.first_line_mid;
-    text.draw(&mut label, pixmap, x, y, ink);
+    text.draw(&mut label, pixmap, clip, (x, y), ink);
 }
 
 /// A horizontal capsule (a circle when `w == h`) centered on (`cx`, `cy`).

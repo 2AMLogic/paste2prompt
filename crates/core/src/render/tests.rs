@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::{Anchor, Editor, MirrorAxis, Op, Point, Region};
+use crate::{Anchor, Caption, Editor, MirrorAxis, Op, Point, Region};
 
 /// A deterministic test image: a diagonal gradient with a few flat
 /// "UI" blocks, so marks are tested over light, dark and mid tones.
@@ -170,6 +170,24 @@ fn fixture_transparent() -> (RgbaImage, Document) {
     (image, ed.into_document())
 }
 
+/// Hint and instructions in scripts the Inter subset can't draw (CJK, emoji,
+/// Arabic, Hebrew), mixed with Latin text it can.
+const UNMAPPABLE_HINT: &str = "把按钮改成绿色 🙂 مرحبا שלום — ok";
+const UNMAPPABLE_INSTRUCTIONS: &str = "全体: 余白を詰める 🚀";
+
+fn fixture_unmappable() -> (RgbaImage, Document) {
+    let image = test_image(800, 400);
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_edit(
+        rect(0.2, 0.2, 0.5, 0.5),
+        Op::Hint,
+        Some(UNMAPPABLE_HINT.into()),
+    )
+    .unwrap();
+    ed.set_instructions(UNMAPPABLE_INSTRUCTIONS);
+    (image, ed.into_document())
+}
+
 fn rgb_of(pixmap: &Pixmap) -> Vec<u8> {
     pixmap
         .data()
@@ -257,6 +275,11 @@ fn golden_empty() {
 #[test]
 fn golden_transparent() {
     check_golden("transparent", fixture_transparent());
+}
+
+#[test]
+fn golden_unmappable() {
+    check_golden("unmappable", fixture_unmappable());
 }
 
 #[test]
@@ -473,5 +496,89 @@ fn caption_rows_stack_when_columns_do_not_fit() {
             }
         }
         assert!(last_bottom <= band.height);
+    }
+}
+
+#[test]
+fn unmappable_characters_become_one_replacement_per_run() {
+    let text = Text::new();
+    assert_eq!(text.drawable("ok — Größe Привет"), "ok — Größe Привет");
+    assert_eq!(text.drawable("把按钮改成绿色"), "\u{FFFD}");
+    assert_eq!(
+        text.drawable(UNMAPPABLE_HINT),
+        "\u{FFFD} \u{FFFD} \u{FFFD} \u{FFFD} — ok"
+    );
+    // A run spanning scripts, emoji sequences included, is still one box.
+    assert_eq!(text.drawable("a😀👍🏽中b"), "a\u{FFFD}b");
+    assert_eq!(text.drawable("a\tb\n"), "a\tb\n");
+}
+
+#[test]
+fn unmappable_text_is_visible_in_the_export() {
+    let (image, doc) = fixture_unmappable();
+    let lines = caption_lines(&doc);
+    let mut text = Text::new();
+    let band = layout_band(&mut text, &lines, image.width.max(MIN_EXPORT_WIDTH) as f32);
+    let mut laid_out = String::new();
+    for item in &band.items {
+        if let Item::Text { block, .. } = item {
+            let (s, all_found) = Text::laid_out(block);
+            assert!(all_found, "{s:?} shaped to a missing glyph");
+            laid_out.push_str(&s);
+            laid_out.push('\n');
+        }
+    }
+    assert!(laid_out.contains('\u{FFFD}'), "{laid_out}");
+    assert!(laid_out.contains("— ok"), "{laid_out}");
+    for c in ['把', '🙂', 'م', 'ש', '全', '🚀'] {
+        assert!(!laid_out.contains(c), "{c} reached layout: {laid_out}");
+    }
+
+    // The export renders, with ink where the hint's replacement characters
+    // are: the caption band is not just background.
+    let png = render_export(&image, &doc).unwrap();
+    assert!(!png.is_empty());
+    let (w, h, _, rgb) = decode_png(&png);
+    assert!(w >= image.width && h > image.height);
+    let ink = rgb[(image.height * w * 3) as usize..]
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .filter(|p| **p == INK)
+        .count();
+    assert!(ink > 0);
+
+    // Copy caption as text keeps the original characters.
+    let plain = Caption::from_document(&doc).to_plain_text();
+    assert!(plain.contains(UNMAPPABLE_HINT), "{plain}");
+    assert!(plain.contains(UNMAPPABLE_INSTRUCTIONS), "{plain}");
+}
+
+#[test]
+fn badges_on_tiny_images_stay_off_the_padding() {
+    // A 16×16 image is smaller than a badge: the pill and its number must
+    // both be clipped to the image, never drawn on the padding around it.
+    let image = test_image(16, 16);
+    let mut ed = Editor::new(size_of(&image));
+    ed.add_edit(rect(0.0, 0.0, 1.0, 1.0), Op::Hint, Some("tiny".into()))
+        .unwrap();
+    ed.add_edit(
+        rect(0.5, 0.5, 1.0, 1.0),
+        Op::Translate { dx: -0.5, dy: 0.0 },
+        None,
+    )
+    .unwrap();
+    let doc = ed.into_document();
+    let p = render_pixmap(&image, &doc).unwrap();
+    let ox = (p.width() - image.width) / 2;
+    for y in 0..image.height {
+        for x in (0..p.width()).filter(|x| !(ox..ox + image.width).contains(x)) {
+            let px = p.pixel(x, y).unwrap();
+            assert_eq!(
+                [px.red(), px.green(), px.blue()],
+                PADDING_BG,
+                "mark ink on the padding at ({x}, {y})"
+            );
+        }
     }
 }
