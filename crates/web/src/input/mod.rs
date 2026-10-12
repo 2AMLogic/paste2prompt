@@ -281,11 +281,15 @@ pub fn OpenButton(input: ImageInput, #[prop(optional)] class: &'static str) -> i
         <button
             type="button"
             class=class
+            aria-label="Open…"
             aria-keyshortcuts=keymap::aria(Action::OpenFile)
             title=keymap::titled("Open an image", Action::OpenFile)
             on:click=move |_| input.open_picker()
         >
-            "Open…"
+            // The header shows the short label on a phone (style.css,
+            // "Header"); the empty state's copy always shows the full one.
+            <span class="label-full">"Open…"</span>
+            <span class="label-short">"Open"</span>
         </button>
     }
 }
