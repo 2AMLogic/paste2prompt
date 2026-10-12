@@ -20,7 +20,11 @@ fails closed instead of going unscanned.
 2. HTML: only top-level .html is allowed. Inline scripts (trunk's loader) use
    no network API, no URL attribute (src, href, srcset, poster, action, ...)
    names another origin, and there is no `<meta http-equiv="refresh">`. CSS
-   (any depth): no url() or @import names another origin.
+   (any depth): no url() or @import names another origin. SVG (any depth,
+   the favicon): only plain drawing elements, no event handlers, no href
+   but a `#fragment`, and no url() or @import to another origin (check_svg).
+   Images and fonts are not scanned, but must start with their format's
+   magic bytes.
 3. The import and data sections of every .wasm in dist/ (any depth). Import
    names must not name a network or navigation API, and every import must
    come from the wasm-bindgen glue (whose shims check 1 has already
@@ -131,6 +135,7 @@ import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
+from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import write_headers  # noqa: E402  (the canonical _headers template)
@@ -254,10 +259,36 @@ MODULE_ATTR = re.compile(r"\bmodule\s*=\s*\"([^\"]+)\"")
 # File types trunk produces today (plus static asset types the app may add).
 # Anything else in dist/ fails closed until this guard is taught to read it.
 # Suffixes are compared lowercased. Only the scanned types plus inert images
-# and fonts; no .svg (it can carry script) and no .htm.
+# and fonts; no .htm. SVG is markup that can carry script, so it is scanned
+# (check_svg), not inert. An inert file must start with its format's magic
+# bytes, so markup renamed to .ico or .png is a finding, not a pass.
 JS_SUFFIXES = {".js", ".mjs"}
-INERT_SUFFIXES = {".png", ".ico", ".jpg", ".webp", ".woff2"}
+INERT_MAGIC = {
+    ".png": (b"\x89PNG\r\n\x1a\n",),
+    ".ico": (b"\x00\x00\x01\x00",),
+    ".jpg": (b"\xff\xd8\xff",),
+    ".webp": (b"RIFF",),
+    ".woff2": (b"wOF2",),
+}
 DIST_NAMES = {"_headers"}
+
+# SVG (#58, the favicon). Parsed as XML and checked against an allowlist of
+# plain drawing elements in the SVG namespace, so <script>, <foreignObject>
+# (HTML inside SVG), <a>, <image>, <feImage>, and <animate>/<set> (which can
+# rewrite an href at runtime) are all findings. No DOCTYPE or entity
+# declarations, and no processing instruction but the XML declaration (an
+# <?xml-stylesheet?> loads a URL). No on* event-handler attribute. Every href
+# (plain or xlink:) must be a same-document `#fragment`. CSS in a <style>
+# element or a style attribute gets the same url()/@import check as a .css
+# file, and so does every other attribute value (fill="url(...)").
+SVG_NS = "{http://www.w3.org/2000/svg}"
+SVG_ELEMENTS = {
+    "svg", "g", "defs", "title", "desc", "symbol", "use", "style",
+    "path", "circle", "ellipse", "rect", "line", "polyline", "polygon",
+    "text", "tspan", "linearGradient", "radialGradient", "stop", "clipPath", "mask",
+}
+SVG_DECL = re.compile(r"<!(DOCTYPE|ENTITY|ELEMENT|ATTLIST)", re.IGNORECASE)
+SVG_PI = re.compile(r"<\?(?!xml\s)", re.IGNORECASE)
 
 # Properties of write_headers.py's CSP template (check 6 runs csp_problems on
 # it). Per-directive source allowlists: lowercased keywords; hash bodies are
@@ -386,10 +417,54 @@ def check_html(path: Path, f: Findings) -> list[str]:
 
 
 def check_css(path: Path, f: Findings) -> None:
-    for m in CSS_URL.finditer(path.read_text(encoding="utf-8")):
+    for ref in _css_external(path.read_text(encoding="utf-8")):
+        f.add(str(path), f"CSS reference to another origin: {ref}")
+
+
+def _css_external(text: str) -> list[str]:
+    """url() and @import references in CSS text that name another origin."""
+    out = []
+    for m in CSS_URL.finditer(text):
         url = m.group(2) if m.group(2) is not None else m.group(4)
         if EXTERNAL_URL.match(url):
-            f.add(str(path), f"CSS reference to another origin: {m.group(0)[:160]}")
+            out.append(m.group(0)[:160])
+    return out
+
+
+def check_svg(path: Path, f: Findings) -> None:
+    where = str(path)
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as e:
+        f.add(where, f"SVG is not UTF-8 ({e}); not scanned")
+        return
+    if SVG_DECL.search(text):
+        f.add(where, "SVG has a DOCTYPE or entity declaration")
+        return
+    if SVG_PI.search(text):
+        f.add(where, "SVG has a processing instruction (e.g. xml-stylesheet)")
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError as e:
+        f.add(where, f"SVG does not parse as XML ({e}); not scanned")
+        return
+    if root.tag != SVG_NS + "svg":
+        f.add(where, f"SVG root element is {root.tag!r}, not <svg> in the SVG namespace")
+    for el in root.iter():
+        tag = el.tag if isinstance(el.tag, str) else repr(el.tag)
+        name = tag[len(SVG_NS):] if tag.startswith(SVG_NS) else None
+        if name not in SVG_ELEMENTS:
+            f.add(where, f"SVG element {tag!r} is not an allowed drawing element")
+        for key, value in el.attrib.items():
+            local = key.rsplit("}", 1)[-1].lower()
+            if local.startswith("on"):
+                f.add(where, f"SVG event-handler attribute {key}={value[:80]!r}")
+            if local == "href" and not value.strip().startswith("#"):
+                f.add(where, f"SVG {key}={value[:80]!r} is not a same-document #fragment")
+            for ref in _css_external(value):
+                f.add(where, f"SVG attribute {key} references another origin: {ref}")
+        for ref in _css_external(el.text or ""):
+            f.add(where, f"SVG {tag!r} text references another origin: {ref}")
 
 
 def _uleb(data: bytes, i: int) -> tuple[int, int]:
@@ -840,7 +915,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     # One walk; every decision is on the lowercased suffix.
-    js, html, css, wasm = [], [], [], []
+    js, html, css, wasm, svg = [], [], [], [], []
     for path in sorted(p for p in dist.rglob("*") if p.is_file()):
         suffix = path.suffix.lower()
         if suffix in JS_SUFFIXES:
@@ -854,7 +929,14 @@ def main(argv: list[str]) -> int:
             css.append(path)
         elif suffix == ".wasm":
             wasm.append(path)
-        elif suffix in INERT_SUFFIXES or (path.parent == dist and path.name in DIST_NAMES):
+        elif suffix == ".svg":
+            svg.append(path)
+        elif suffix in INERT_MAGIC:
+            with path.open("rb") as fh:
+                head = fh.read(16)
+            if not head.startswith(INERT_MAGIC[suffix]):
+                f.add(str(path), f"{suffix} file does not start with the {suffix} magic bytes")
+        elif path.parent == dist and path.name in DIST_NAMES:
             pass
         else:
             f.add(str(path), "file type the privacy guard does not scan; teach it or remove the file")
@@ -872,6 +954,8 @@ def main(argv: list[str]) -> int:
         check_js(path, f, LOADER_ALLOWLIST if path == glue else ())
     for path in css:
         check_css(path, f)
+    for path in svg:
+        check_svg(path, f)
     n_imports = sum(check_wasm(path, f) for path in wasm)
     modules = check_rust(args.web_crate, f)
     n_crate_js = check_crate_js(args.web_crate, modules, f)
@@ -885,7 +969,7 @@ def main(argv: list[str]) -> int:
                 print(f"::error::privacy_check: {item}")
         return 1
     print(
-        f"privacy_check: OK ({len(js)} JS, {len(html)} HTML, {len(wasm)} wasm with "
+        f"privacy_check: OK ({len(js)} JS, {len(html)} HTML, {len(svg)} SVG, {len(wasm)} wasm with "
         f"{n_imports} imports, crates/web sources and {n_crate_js} crate JS, _headers exact)"
     )
     return 0

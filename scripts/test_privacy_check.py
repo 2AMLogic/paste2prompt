@@ -687,15 +687,121 @@ class FileTypesAnyCase(GuardTest):
         self.fx.write("dist/extra.CSS", "a { background: url(https://x.example/a.png); }\n")
         self.assertFails("extra.CSS", "CSS reference to another origin")
 
-    def test_svg_and_htm_fail_closed(self):
-        for name in ["dist/logo.svg", "dist/page.htm"]:
-            with self.subTest(name=name):
-                self.fx.write(name, "<svg/>")
-                self.assertFails("file type the privacy guard does not scan")
+    def test_htm_fails_closed(self):
+        self.fx.write("dist/page.htm", "<p>hi</p>")
+        self.assertFails("file type the privacy guard does not scan")
+
+    def test_uppercase_svg_is_scanned(self):
+        self.fx.write("dist/logo.SVG", SVG_ICON.replace("<path", "<script>x()</script><path"))
+        self.assertFails("logo.SVG", "'{http://www.w3.org/2000/svg}script' is not an allowed")
 
     def test_uppercase_crate_js_is_scanned(self):
         self.fx.write("crates/web/helper.JS", "navigator.sendBeacon('/b', d);\n")
         self.assertFails("helper.JS:1")
+
+
+# The shipped favicon's shape (crates/web/favicon.svg).
+SVG_ICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<circle cx="16" cy="16" r="15" fill="#de1923" stroke="#fff" stroke-width="2"/>'
+    '<path fill="#fff" d="M14.5 24V12.6l-3.2 1.7V10.4L15.3 8h3.2v16z"/></svg>\n'
+)
+ICO_HEAD = b"\x00\x00\x01\x00\x01\x00" + b"\x00" * 16
+PNG_HEAD = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+
+class Favicon(GuardTest):
+    """#58: the favicon's SVG is scanned as markup, .ico/.png only as images."""
+
+    def test_real_favicon_svg_passes(self):
+        real = Path(__file__).resolve().parent.parent / "crates" / "web" / "favicon.svg"
+        self.fx.write("dist/favicon.svg", real.read_text(encoding="utf-8"))
+        self.assertPasses()
+
+    def test_clean_svg_ico_png_pass(self):
+        self.fx.write("dist/favicon.svg", SVG_ICON)
+        (self.fx.dist / "favicon.ico").write_bytes(ICO_HEAD)
+        (self.fx.dist / "icon.png").write_bytes(PNG_HEAD)
+        self.fx.html('<link rel="icon" href="/favicon.ico"><link rel="icon" href="/favicon.svg">')
+        self.fx.headers()
+        self.assertPasses()
+
+    def test_local_fragment_href_passes(self):
+        self.fx.write("dist/favicon.svg", SVG_ICON.replace(
+            "</svg>", '<defs><linearGradient id="g"><stop offset="0"/></linearGradient></defs>'
+                      '<use href="#g"/><rect fill="url(#g)" style="fill: url(#g)"/></svg>'))
+        self.assertPasses()
+
+    def test_malicious_svg_fails(self):
+        cases = {
+            "script element": ("<script>fetch('/x')</script>", "script' is not an allowed"),
+            "script in CDATA": ("<script><![CDATA[x()]]></script>", "script' is not an allowed"),
+            "onload attribute": ('<rect onload="x()"/>', "event-handler attribute onload"),
+            "uppercase handler": ('<rect ONCLICK="x()"/>', "event-handler attribute ONCLICK"),
+            "foreignObject": ('<foreignObject><div xmlns="http://www.w3.org/1999/xhtml">'
+                              '</div></foreignObject>', "foreignObject' is not an allowed"),
+            "anchor": ('<a href="https://evil.example/"><rect/></a>', "a' is not an allowed"),
+            "image element": ('<image href="https://evil.example/i.png"/>',
+                              "image' is not an allowed"),
+            "set rewrites href": ('<set attributeName="href" to="javascript:x()"/>',
+                                  "set' is not an allowed"),
+            "external use href": ('<use href="https://evil.example/s.svg#a"/>',
+                                  "is not a same-document #fragment"),
+            "xlink:href": ('<use xmlns:xlink="http://www.w3.org/1999/xlink" '
+                           'xlink:href="//evil.example/s.svg#a"/>',
+                           "is not a same-document #fragment"),
+            "javascript href": ('<use href="javascript:x()"/>', "is not a same-document #fragment"),
+            "external fill url": ('<rect fill="url(https://evil.example/p.svg#g)"/>',
+                                  "attribute fill references another origin"),
+            "style attribute url": ('<rect style="fill: url(//evil.example/p#g)"/>',
+                                    "attribute style references another origin"),
+            "style element import": ("<style>@import 'https://evil.example/a.css';</style>",
+                                     "text references another origin"),
+            "style element url": ("<style>rect { fill: url(https://evil.example/x) }</style>",
+                                  "text references another origin"),
+            "html-namespace script": ('<h:script xmlns:h="http://www.w3.org/1999/xhtml">x()'
+                                      "</h:script>", "is not an allowed drawing element"),
+        }
+        for label, (inject, needle) in cases.items():
+            with self.subTest(case=label):
+                self.fx.write("dist/favicon.svg", SVG_ICON.replace("<path", inject + "<path"))
+                self.assertFails("favicon.svg", needle)
+
+    def test_malformed_or_declared_svg_fails(self):
+        cases = {
+            "entity": ('<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY e "x">]>' + SVG_ICON,
+                       "DOCTYPE or entity declaration"),
+            "stylesheet PI": ('<?xml-stylesheet href="https://evil.example/a.css"?>' + SVG_ICON,
+                              "processing instruction"),
+            "not XML": ("<svg><rect></svg>", "does not parse as XML"),
+            "no namespace": ("<svg/>", "not <svg> in the SVG namespace"),
+            "nested and not UTF-8": (b"\xff\xfe<svg/>", "not UTF-8"),
+        }
+        for label, (text, needle) in cases.items():
+            with self.subTest(case=label):
+                path = self.fx.dist / "snippets" / "x" / "icon.svg"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if isinstance(text, bytes):
+                    path.write_bytes(text)
+                else:
+                    path.write_text(text, encoding="utf-8")
+                self.assertFails("icon.svg", needle)
+
+    def test_xml_declaration_passes(self):
+        self.fx.write("dist/favicon.svg", '<?xml version="1.0" encoding="UTF-8"?>\n' + SVG_ICON)
+        self.assertPasses()
+
+    def test_markup_renamed_to_an_image_fails(self):
+        for name in ["favicon.ico", "icon.PNG", "a.jpg", "a.webp", "a.woff2"]:
+            with self.subTest(name=name):
+                path = self.fx.dist / name
+                path.write_text("<svg onload=x()>", encoding="utf-8")
+                self.assertFails(name, "magic bytes")
+                path.unlink()
+
+    def test_empty_ico_fails(self):
+        (self.fx.dist / "favicon.ico").write_bytes(b"")
+        self.assertFails("favicon.ico", "magic bytes")
 
 
 class LoaderAllowanceGlueOnly(GuardTest):
