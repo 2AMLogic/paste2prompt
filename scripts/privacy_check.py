@@ -724,7 +724,7 @@ def template_problems(template: str) -> list[str]:
     return problems
 
 
-_SHA256_SOURCE = re.compile(r"'sha256-[A-Za-z0-9+/]+={0,2}'")
+_SHA256_SOURCE = re.compile(r"'sha256-[A-Za-z0-9+/]{43}='")
 
 
 def rendered_problems(text: str) -> list[str]:
