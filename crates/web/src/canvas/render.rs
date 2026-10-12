@@ -5,14 +5,15 @@
 //!
 //! Each edit's outline, badge, ghost, arrow and mirror glyph use the export's
 //! color for its badge number ([`mark_css`]). Selection is a neutral
-//! ring ([`SELECTION_RING`]) outside the white halo, so it never
-//! depends on the edit's color.
+//! two-tone ring outside the white halo: dark ([`SELECTION_RING`]) inside
+//! light ([`SELECTION_RING_OUTER`]), so it never depends on the edit's
+//! color and shows on light and dark images alike.
 
 use paste2prompt_core::{ImageSize, MirrorAxis, Op, badge_positions};
 use wasm_bindgen::JsValue;
 use web_sys::CanvasRenderingContext2d;
 
-use super::colors::{SELECTION_RING, mark_css};
+use super::colors::{SELECTION_RING, SELECTION_RING_OUTER, mark_css};
 use super::controller::{Controller, Handle, Preview};
 use super::geom::Px;
 use super::source::SourceImage;
@@ -25,9 +26,11 @@ const PREVIEW: &str = "#ff2d55";
 const BADGE_RADIUS: f64 = 11.0;
 /// Width of the badge's white ring, half of it outside `BADGE_RADIUS`.
 const BADGE_RING: f64 = 2.0;
-/// The selected badge's extra rings: white, then [`SELECTION_RING`].
+/// The selected badge's extra rings: white, then [`SELECTION_RING`], then
+/// [`SELECTION_RING_OUTER`].
 const SELECTED_BADGE_GAP: f64 = 2.5;
 const SELECTED_BADGE_RING: f64 = 2.5;
+const SELECTED_BADGE_OUTER_RING: f64 = 2.0;
 const HANDLE_SIZE: f64 = 9.0;
 
 /// Draws one frame. `ctx` is already scaled so one unit is one CSS pixel.
@@ -89,6 +92,7 @@ pub fn draw(
         let number = i + 1;
         let color = mark_css(number);
         if is_selected {
+            stroke_path(ctx, &pts, SELECTION_RING_OUTER, 12.0);
             stroke_path(ctx, &pts, SELECTION_RING, 9.0);
             stroke_path(ctx, &pts, HALO, 6.0);
             stroke_path(ctx, &pts, &color, 3.0);
@@ -264,10 +268,13 @@ fn badge(
     selected: bool,
 ) -> Result<(), JsValue> {
     if selected {
-        // A neutral ring outside a white gap, outside the badge's own ring.
+        // A light ring outside a dark ring outside a white gap, outside the
+        // badge's own ring: one of the two rings contrasts with any image.
         let r = BADGE_RADIUS + BADGE_RING / 2.0;
+        let dark = r + SELECTED_BADGE_GAP + SELECTED_BADGE_RING;
         for (radius, fill) in [
-            (r + SELECTED_BADGE_GAP + SELECTED_BADGE_RING, SELECTION_RING),
+            (dark + SELECTED_BADGE_OUTER_RING, SELECTION_RING_OUTER),
+            (dark, SELECTION_RING),
             (r + SELECTED_BADGE_GAP, "#fff"),
         ] {
             ctx.begin_path();

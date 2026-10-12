@@ -90,6 +90,14 @@ pub fn mark_color(number: usize) -> [u8; 3] {
     PALETTE[number.saturating_sub(1) % PALETTE.len()]
 }
 
+/// The edit colors, in order, as RGB: `palette()[k]` is the color of edits
+/// `k + 1`, `k + 1 + len`, and so on ([`mark_color`] cycles through it).
+/// Exposed so a front end can mirror the palette (e.g. one CSS class per
+/// entry) without inferring its length from `mark_color`.
+pub fn palette() -> &'static [[u8; 3]] {
+    &PALETTE
+}
+
 /// A decoded image: `width × height` pixels of straight (not premultiplied)
 /// RGBA8, row-major from the top-left, as from a canvas `getImageData`.
 #[derive(Debug, Clone, PartialEq, Eq)]
