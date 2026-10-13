@@ -324,6 +324,12 @@
 #                                      see "SSH alias lock" below, repo#213)
 #   REPO_REMOTE_SSH_LOCK_POLL_INTERVAL seconds between lock-acquisition
 #                                      retries (default 1)
+#   REPO_REMOTE_CALLER                 stable id that tags this host/operator's
+#                                      own tcp/22 rules (Description marker), so
+#                                      a second caller's `up` on a shared box
+#                                      never revokes this one's rule and locks
+#                                      it out (default: short hostname;
+#                                      rjwalters/loom#11616)
 #   REPO_REMOTE_SSH_READY_TIMEOUT      total seconds the end-of-run SSH
 #                                      reachability probe waits for a
 #                                      still-booting guest before failing
@@ -634,6 +640,7 @@ resolve_settings() {
   PROVIDER="$(printf '%s' "$PROVIDER" | tr '[:upper:]' '[:lower:]')"
 
   NAME="$(basename "${GIT_ROOT:-$PWD}")"
+  CALLER="$(repo_remote_caller)"
 
   INSTANCE_TYPE="${REPO_REMOTE_INSTANCE_TYPE:-}"
   INSTANCE_ID="${REPO_REMOTE_INSTANCE_ID:-}"
@@ -1589,12 +1596,27 @@ aws_die_no_ssh_cidr() {
   die 2 "could not detect the current IP via ${REPO_REMOTE_IP_ECHO_URL:-https://checkip.amazonaws.com}, so there is no address to authorize SSH ingress from. Refusing to fall back to 0.0.0.0/0. Set REPO_REMOTE_SSH_CIDR to the address you connect from (e.g. REPO_REMOTE_SSH_CIDR=203.0.113.7/32) and re-run."
 }
 
+# A stable per-CALLER id. The owner marker below includes it so each host (or
+# operator) only ever reclaims ITS OWN earlier /32 — never a peer's. Without
+# this, two hosts that both `up` the same repo's box share one marker, and the
+# second host's run revokes the first's rule and locks it out (rjwalters/loom#11616:
+# a builder host's `up` on a shared repo-remote box revoked volt's SSH rule).
+# Override with REPO_REMOTE_CALLER; default is the short hostname. Sanitised to
+# the Description charset, and `:` (the marker delimiter) is never emitted.
+repo_remote_caller() {
+  local c="${REPO_REMOTE_CALLER:-$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo host)}"
+  printf '%s' "$c" | tr -c 'A-Za-z0-9_.-' '-' | cut -c1-40
+}
+
 # Every tcp/22 rule this tooling writes carries a Description marked with this
 # prefix (repo#487), so an audit can trace each rule to its owner and so the
-# refresh below knows which rules are ITS OWN and may be replaced. A rule
-# without this marker was added by somebody else and is never touched.
-ssh_rule_marker_prefix() { printf 'repo-remote:%s:' "$NAME"; }
-ssh_rule_description()   { printf 'repo-remote:%s:%s' "$NAME" "$(date -u +%Y-%m-%d)"; }
+# refresh below knows which rules are ITS OWN and may be replaced. The marker is
+# per repo-name AND per caller (repo#487, rjwalters/loom#11616), so one host
+# never reclaims another host's rule. A rule without this exact marker — a
+# peer's, an operator's hand-added rule, or an old pre-caller-marker rule — was
+# added by somebody else and is never touched (it is left in place, not revoked).
+ssh_rule_marker_prefix() { printf 'repo-remote:%s:%s:' "$NAME" "$CALLER"; }
+ssh_rule_description()   { printf 'repo-remote:%s:%s:%s' "$NAME" "$CALLER" "$(date -u +%Y-%m-%d)"; }
 
 # Idempotently authorize tcp/22 from the resolved CIDR, labelled with the
 # owner marker. A duplicate rule on a reused security group is success, not an
@@ -1654,6 +1676,22 @@ aws_revoke_stale_ssh_ingress() {  # <sg-id> <keep-cidr>
       log "revoked this tooling's stale SSH ingress rule on ${sg} (tcp/22 from ${cidr}) — superseded by ${keep}"
     fi
   done < <(aws_tool_owned_ssh_cidrs "$sg")
+}
+
+# Legacy (pre-per-caller) rules carry `repo-remote:<name>:<YYYY-MM-DD>` and no
+# longer match any caller's prefix, so they are never auto-revoked (the owner is
+# unknown). Surface them in one NOTICE so the leftover exposure is visible.
+aws_notice_legacy_ssh_ingress() {  # <sg-id>
+  local sg="$1" legacy legacy_len
+  # Legacy shape is exactly repo-remote:<name>:<YYYY-MM-DD>. JMESPath has no
+  # regex or arithmetic, so pin the total length: a per-caller rule whose
+  # caller id starts with "20" is longer and must not match.
+  legacy_len=$(( ${#NAME} + 13 + 10 ))
+  legacy="$(aws ec2 describe-security-groups --group-ids "$sg" \
+    --query "SecurityGroups[0].IpPermissions[?ToPort==\`22\`].IpRanges[] | [?Description != null && starts_with(Description, 'repo-remote:${NAME}:20') && length(Description) == \`${legacy_len}\`].CidrIp" \
+    --output text 2>/dev/null | tr '[:space:]' ' ' | sed -E 's/(^| )None( |$)/ /g; s/^ +| +$//g')" || true
+  [[ -n "$legacy" ]] || return 0
+  log "NOTICE: legacy-format SSH ingress rule(s) on ${sg} (tcp/22 from: ${legacy}) are no longer revoked automatically. If stale, revoke by hand with: aws ec2 revoke-security-group-ingress --group-id ${sg} --protocol tcp --port 22 --cidr <cidr>"
 }
 
 # Post-authorize verification — this is what would have caught the reported
@@ -1742,6 +1780,7 @@ aws_refresh_ssh_ingress() {  # [--no-create]
   # Replace, don't accumulate: drop this tooling's own earlier /32s first
   # (repo#487), then authorize the address actually in use now.
   aws_revoke_stale_ssh_ingress "$RESOLVED_SG" "$RESOLVED_SSH_CIDR"
+  aws_notice_legacy_ssh_ingress "$RESOLVED_SG"
   aws_authorize_ssh_ingress "$RESOLVED_SG" "$RESOLVED_SSH_CIDR"
   aws_verify_ssh_ingress "$RESOLVED_SG"
 }
