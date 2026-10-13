@@ -11,28 +11,38 @@
 //! Two arrangements are tried, and the one that shows the image larger
 //! wins:
 //!
-//! - [`Arrangement::Side`]: the history panel beside the canvas column.
-//!   The stage loses the panel's width, keeps the full height. Only offered
-//!   when the canvas column keeps at least [`Chrome::min_side_main`] pixels,
-//!   so phones and narrow windows always get the panel below.
-//! - [`Arrangement::Below`]: the panel under the canvas column. The stage
-//!   gets the full width but, when `Side` was on offer too, gives up
-//!   [`Chrome::panel_peek`] of height, so the panel's header and first row
-//!   stay in view instead of the panel hiding below the fold. When `Below`
-//!   is the only choice (a phone), there is no peek: the panel is a scroll
-//!   away either way, and the image gets the height.
+//! - [`Arrangement::Side`]: a column beside the stage holds the
+//!   instructions box and, under it, the history panel. The stage loses
+//!   that column's width and keeps the full height. Only offered when the
+//!   canvas column keeps at least [`Chrome::min_side_main`] pixels, so
+//!   phones and narrow windows always get `Below`.
+//! - [`Arrangement::Below`]: the instructions box, then the panel, under
+//!   the stage. The stage gets the full width but gives up the
+//!   instructions box's height ([`Space::instructions_h`]) and, when
+//!   `Side` was on offer too, [`Chrome::panel_peek`] more, so the panel's
+//!   header and first row stay in view instead of the panel hiding below
+//!   the fold. When `Below` is the only choice (a phone), there is no
+//!   peek: the panel is a scroll away either way, and the image gets the
+//!   height.
+//!
+//! Each arrangement is budgeted with its own height (#73), from one
+//! measurement that doesn't depend on the arrangement on screen, so the
+//! choice made from either arrangement is the same.
 //!
 //! Near the crossover a small hysteresis ([`Chrome::hysteresis`]) keeps
 //! the current arrangement, so resizing the window doesn't flip it back and
 //! forth. Ties go to `Side`, which keeps the panel visible.
 
-/// Where the history panel sits relative to the canvas column.
+/// Where the instructions box and the history panel sit relative to the
+/// stage. Only `.workspace`'s class changes between the two (the DOM is
+/// the same), so the instructions textarea is never remounted and keeps
+/// its focus and caret when the arrangement flips (#73).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Arrangement {
-    /// Beside the canvas column.
+    /// In a column beside the stage, the instructions box above the panel.
     #[default]
     Side,
-    /// Below the canvas column.
+    /// Under the stage, the instructions box above the panel.
     Below,
 }
 
@@ -55,9 +65,17 @@ pub struct Space {
     /// page's bottom padding: the height the canvas column may fill without
     /// scrolling.
     pub height: f64,
-    /// What is stacked under the stage in its column (the gap and the
-    /// instructions box), which also has to fit in `height`.
-    pub under_stage: f64,
+    /// The instructions box's height (its border box). Where it costs the
+    /// stage height depends on the arrangement, so it is passed on its own
+    /// rather than as "what is under the stage now": in
+    /// [`Arrangement::Below`] it sits under the stage, [`Chrome::stack_gap`]
+    /// below it; in [`Arrangement::Side`] it sits in the side column, above
+    /// the history panel, and the stage gets the full height. The box is the
+    /// same height in both (a one-line label and a fixed number of rows), so
+    /// measuring it in whichever arrangement is on screen budgets both
+    /// arrangements correctly, and neither looks better than it is from the
+    /// other.
+    pub instructions_h: f64,
 }
 
 /// Fixed sizes around the stage, in CSS pixels. [`Chrome::DEFAULT`] matches
@@ -68,11 +86,15 @@ pub struct Chrome {
     pub margin: f64,
     /// The stage's border width (CSS `border: 1px`), on every side.
     pub border: f64,
-    /// The history panel's width beside the canvas (`.workspace.side
-    /// .history-panel { min-width }`).
+    /// The side column's narrowest width, for the instructions box and the
+    /// history panel (`.workspace.side { grid-template-columns }`).
     pub panel_side_w: f64,
-    /// The gap between the canvas column and the panel (`.workspace { gap }`).
+    /// The gap between the canvas column and the side column
+    /// (`.workspace { column-gap }`).
     pub gap: f64,
+    /// The gap between the stage and the instructions box under it, in
+    /// [`Arrangement::Below`] (`.workspace { row-gap }`).
+    pub stack_gap: f64,
     /// Height kept free for the panel's header and first row, gap included,
     /// when the panel is below by choice (not on a phone).
     pub panel_peek: f64,
@@ -93,6 +115,7 @@ impl Chrome {
         border: 1.0,
         panel_side_w: 300.0,
         gap: 16.0,
+        stack_gap: 8.0,
         panel_peek: 96.0,
         min_side_main: 360.0,
         min_stage_h: 200.0,
@@ -160,7 +183,10 @@ pub fn choose_layout(
     let image = (f64::from(image_w.max(1)), f64::from(image_h.max(1)));
     let cap = max_scale(image_w, image_h);
     let border = 2.0 * chrome.border;
-    let column_h = (space.height - space.under_stage).max(0.0);
+    // Each arrangement's own height budget: in Below the instructions box
+    // (and its gap) is under the stage; in Side it is in the side column.
+    let below_h = (space.height - chrome.stack_gap - space.instructions_h).max(0.0);
+    let side_h = space.height.max(0.0);
     let fit = |arrangement, outer_w: f64, outer_h: f64| {
         let box_h = (outer_h - border).max(chrome.min_stage_h);
         let (scale, stage_w, stage_h) = fit_in(
@@ -180,14 +206,10 @@ pub fn choose_layout(
 
     let side_main = space.width - chrome.gap - chrome.panel_side_w;
     if side_main < chrome.min_side_main {
-        return fit(Arrangement::Below, space.width, column_h);
+        return fit(Arrangement::Below, space.width, below_h);
     }
-    let below = fit(
-        Arrangement::Below,
-        space.width,
-        column_h - chrome.panel_peek,
-    );
-    let side = fit(Arrangement::Side, side_main, column_h);
+    let below = fit(Arrangement::Below, space.width, below_h - chrome.panel_peek);
+    let side = fit(Arrangement::Side, side_main, side_h);
     let keep = 1.0 + chrome.hysteresis;
     let side_wins = match current {
         Some(Arrangement::Below) => side.scale > below.scale * keep,
@@ -203,16 +225,35 @@ mod tests {
 
     const C: Chrome = Chrome::DEFAULT;
 
-    /// A window of `vw` x `vh` CSS pixels, with chrome above the workspace
-    /// and the instructions box under the stage like the real page.
+    /// The instructions box's height on the real page (measured headless,
+    /// #73).
+    const INSTRUCTIONS_H: f64 = 92.0;
+
+    /// A window of `vw` x `vh` CSS pixels, with the header, toolbar and
+    /// image line above the workspace as on the real page (174 px at
+    /// 1440 x 900, measured headless).
     fn space(vw: f64, vh: f64) -> Space {
         let page_pad = 16.0;
-        let above = 150.0;
+        let above = 174.0;
         Space {
             width: vw - 2.0 * page_pad,
             height: vh - above - page_pad,
-            under_stage: 90.0,
+            instructions_h: INSTRUCTIONS_H,
         }
+    }
+
+    /// What the arrangement stacks under the stage: the instructions box
+    /// in `Below`, nothing in `Side`.
+    fn under_stage(a: Arrangement, s: Space) -> f64 {
+        match a {
+            Arrangement::Side => 0.0,
+            Arrangement::Below => C.stack_gap + s.instructions_h,
+        }
+    }
+
+    /// The stage's outer (border-box) height.
+    fn outer_h(l: &Layout) -> f64 {
+        f64::from(l.stage_h) + 2.0 * C.border
     }
 
     fn pick(w: u32, h: u32, s: Space) -> Layout {
@@ -233,7 +274,8 @@ mod tests {
             Arrangement::Below if side_offered => C.panel_peek,
             _ => 0.0,
         };
-        let avail_h = (s.height - s.under_stage - peek).max(C.min_stage_h + 2.0 * C.border);
+        let avail_h =
+            (s.height - under_stage(l.arrangement, s) - peek).max(C.min_stage_h + 2.0 * C.border);
         assert!(outer_h <= avail_h, "{l:?} too tall for {s:?}");
     }
 
@@ -259,7 +301,9 @@ mod tests {
         // Height-limited: the stage is tall and narrow, not a full-width
         // box with gutters.
         assert!(l.stage_h - 48 > (l.stage_w - 48) * 2);
-        assert!(f64::from(l.stage_h) + 2.0 * C.border >= s.height - s.under_stage - 1.0);
+        // The instructions are in the side column, so the stage takes the
+        // column's full height.
+        assert!(outer_h(&l) >= s.height - 1.0);
     }
 
     #[test]
@@ -328,7 +372,7 @@ mod tests {
         // A tall one takes the full column height: no peek kept for the
         // panel, which is a scroll away regardless.
         let l = pick(1170, 2532, s);
-        assert!(f64::from(l.stage_h) + 2.0 * C.border >= s.height - s.under_stage - 1.0);
+        assert!(outer_h(&l) >= s.height - under_stage(Arrangement::Below, s) - 1.0);
     }
 
     #[test]
@@ -337,7 +381,7 @@ mod tests {
         let s = Space {
             width: 360.0 + C.gap + C.panel_side_w - 1.0,
             height: 2000.0,
-            under_stage: 90.0,
+            instructions_h: INSTRUCTIONS_H,
         };
         assert_eq!(pick(400, 6000, s).arrangement, Arrangement::Below);
         let wider = Space {
@@ -369,7 +413,7 @@ mod tests {
         let small = Space {
             width: 200.0,
             height: 2000.0,
-            under_stage: 0.0,
+            instructions_h: 0.0,
         };
         let l = pick(256, 256, small);
         assert!(l.scale < 2.0);
@@ -431,11 +475,125 @@ mod tests {
     }
 
     #[test]
+    fn each_arrangement_budgets_the_instructions_where_it_puts_them() {
+        // A tall image, height-limited in both arrangements.
+        let s = space(2400.0, 900.0);
+        let (w, h) = (400, 6000);
+        let side = choose_layout(w, h, s, C, Some(Arrangement::Side));
+        assert_eq!(side.arrangement, Arrangement::Side);
+        // Side: the instructions are beside the stage, which gets it all.
+        assert!(outer_h(&side) <= s.height && outer_h(&side) >= s.height - 1.0);
+        // Below: under the stage go the gap, the instructions and the peek.
+        let squeeze = Space { width: 600.0, ..s };
+        let below = choose_layout(w, h, squeeze, C, None);
+        assert_eq!(below.arrangement, Arrangement::Below);
+        let budget = s.height - C.stack_gap - s.instructions_h;
+        assert!(outer_h(&below) <= budget && outer_h(&below) >= budget - 1.0);
+        // A taller instructions box (the user dragged it) costs Below the
+        // difference and Side nothing.
+        let tall = Space {
+            instructions_h: s.instructions_h + 50.0,
+            ..s
+        };
+        let side_tall = choose_layout(w, h, tall, C, Some(Arrangement::Side));
+        assert_eq!(side_tall, side);
+        let below_tall = choose_layout(
+            w,
+            h,
+            Space {
+                width: 600.0,
+                ..tall
+            },
+            C,
+            None,
+        );
+        assert!(outer_h(&below_tall) <= outer_h(&below) - 49.0);
+    }
+
+    #[test]
+    fn portrait_at_1440x900_gains_about_18_percent() {
+        let s = space(1440.0, 900.0);
+        assert_eq!(s.height, 710.0, "the column height measured on the page");
+        let (w, h) = (1170, 2532);
+        let l = pick(w, h, s);
+        assert_eq!(l.arrangement, Arrangement::Side);
+        // Before #73 the instructions box and its gap came out of the
+        // column: 710 - 8 - 92 = 610 px of stage, border included.
+        let before = (610.0 - 2.0 * C.border - 2.0 * C.margin) / f64::from(h);
+        let after = (s.height - 2.0 * C.border - 2.0 * C.margin) / f64::from(h);
+        assert!((l.scale - after).abs() < 1e-9, "{l:?}");
+        let gain = l.scale / before;
+        assert!((1.16..1.20).contains(&gain), "gain {gain}");
+    }
+
+    #[test]
+    fn landscape_at_1440x900_gains_until_it_is_width_limited() {
+        let s = space(1440.0, 900.0);
+        let (w, h) = (1920, 1080);
+        let l = pick(w, h, s);
+        assert_eq!(l.arrangement, Arrangement::Side);
+        let before = (610.0 - 2.0 * C.border - 2.0 * C.margin) / f64::from(h);
+        let width_limit =
+            (s.width - C.gap - C.panel_side_w - 2.0 * C.border - 2.0 * C.margin) / f64::from(w);
+        assert!((l.scale - width_limit).abs() < 1e-9, "{l:?}");
+        let gain = l.scale / before;
+        assert!((1.03..1.08).contains(&gain), "gain {gain}");
+    }
+
+    /// Re-laying out at the same space, from the arrangement just chosen,
+    /// keeps it: the layout settles in one step whichever arrangement the
+    /// page started in, with no back-and-forth.
+    fn assert_settles(w: u32, h: u32, s: Space) {
+        for start in [Arrangement::Side, Arrangement::Below] {
+            let first = choose_layout(w, h, s, C, Some(start));
+            let again = choose_layout(w, h, s, C, Some(first.arrangement));
+            assert_eq!(first, again, "{w}x{h} in {s:?} from {start:?}");
+        }
+    }
+
+    #[test]
+    fn no_flip_flop_across_a_resize_sweep() {
+        let images = [
+            (1170, 2532),
+            (1920, 1080),
+            (3000, 400),
+            (2400, 700),
+            (2000, 2000),
+            (400, 6000),
+            (64, 64),
+        ];
+        for (w, h) in images {
+            for vh in [600.0, 900.0, 1200.0] {
+                // Narrow to wide and back, a pixel at a time, each step
+                // starting from the arrangement the last one chose.
+                let widths: Vec<f64> = (360..=3000).map(f64::from).collect();
+                for sweep in [
+                    widths.clone(),
+                    widths.iter().rev().copied().collect::<Vec<_>>(),
+                ] {
+                    let mut current = None;
+                    let mut flips = 0;
+                    for &vw in &sweep {
+                        let s = space(vw, vh);
+                        assert_settles(w, h, s);
+                        let l = choose_layout(w, h, s, C, current);
+                        if current.is_some_and(|c| c != l.arrangement) {
+                            flips += 1;
+                        }
+                        current = Some(l.arrangement);
+                    }
+                    assert!(flips <= 1, "{w}x{h} at height {vh}: {flips} flips");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn degenerate_inputs_do_not_panic() {
         let zero = Space {
             width: 0.0,
             height: 0.0,
-            under_stage: 500.0,
+            instructions_h: 500.0,
         };
         let l = pick(0, 0, zero);
         assert!(l.scale > 0.0 && l.scale.is_finite());
