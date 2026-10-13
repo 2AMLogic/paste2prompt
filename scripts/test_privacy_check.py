@@ -41,19 +41,18 @@ async function __wbg_init(module_or_path) {
 }
 """
 
-INDEX = """\
-<!doctype html>
-<html lang="en">
-  <head>
-    <link rel="stylesheet" href="/style-1.css" />
-    <script type="module">
-import init, * as bindings from '/paste2prompt-web-1.js';
-const wasm = await init({ module_or_path: '/paste2prompt-web-1_bg.wasm' });
-    </script>
-  </head>
-  <body>{BODY}</body>
-</html>
-"""
+# A page that matches INDEX_TEMPLATE (check 7), with the shortest hashes
+# trunk can write. Tests add markup with Fixture.html(body) or page(body).
+FAKE_INTEGRITY = "A" * 64
+INDEX = privacy_check.render_index(
+    {"WASM_HASH": "1", "CSS_HASH": "1", "CSS_INTEGRITY": FAKE_INTEGRITY}
+)
+
+
+def page(body: str = "") -> str:
+    """INDEX with body markup in <body>; any body but "" breaks the template."""
+    return INDEX.replace("<body></body>", f"<body>{body}</body>")
+
 
 MAIN_RS = """\
 //! Browser entry point.
@@ -130,7 +129,7 @@ class Fixture:
         return path
 
     def html(self, body: str = "") -> None:
-        self.write("dist/index.html", INDEX.replace("{BODY}", body))
+        self.write("dist/index.html", page(body))
 
     def headers(self) -> None:
         """Write _headers via write_headers.py, as the build does."""
@@ -164,10 +163,31 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
 
     def assertFails(self, *needles: str) -> str:
+        """Fails, and every needle is in the output.
+
+        The index-template diff lines (check 7) quote the page, so they are
+        dropped first: a needle has to come from a finding's message, not
+        from the markup a test injected.
+        """
         rc, out = self.fx.run()
         self.assertEqual(rc, 1, f"guard passed but should have failed:\n{out}")
+        out = "\n".join(l for l in out.splitlines() if privacy_check.TEMPLATE_DIFF not in l)
         for needle in needles:
             self.assertIn(needle, out)
+        return out
+
+    def assertOnlyTemplateFails(self) -> str:
+        """Every other check passes; only check 7 (the index template) fails.
+
+        For markup the parser-based checks must not flag, but that is not
+        trunk's page, so the guard as a whole must still fail.
+        """
+        rc, out = self.fx.run()
+        self.assertEqual(rc, 1, f"guard passed but should have failed:\n{out}")
+        findings = out.splitlines()[1:]
+        self.assertTrue(findings, out)
+        for line in findings:
+            self.assertIn(privacy_check.TEMPLATE_FINDING, line, out)
         return out
 
 
@@ -723,9 +743,11 @@ class Favicon(GuardTest):
         self.fx.write("dist/favicon.svg", SVG_ICON)
         (self.fx.dist / "favicon.ico").write_bytes(ICO_HEAD)
         (self.fx.dist / "icon.png").write_bytes(PNG_HEAD)
+        self.assertPasses()
+        # Extra icon links pass the parser checks, but are not trunk's page.
         self.fx.html('<link rel="icon" href="/favicon.ico"><link rel="icon" href="/favicon.svg">')
         self.fx.headers()
-        self.assertPasses()
+        self.assertOnlyTemplateFails()
 
     def test_local_fragment_href_passes(self):
         self.fx.write("dist/favicon.svg", SVG_ICON.replace(
@@ -974,7 +996,7 @@ class NonBlocking(GuardTest):
     def test_html_local_urls_pass(self):
         self.fx.html('<img src="/a.png" srcset="/a.png 1x, b.png 2x"><img src="data:image/png;base64,AA==">')
         self.fx.headers()
-        self.assertPasses()
+        self.assertOnlyTemplateFails()
 
 
 
@@ -1379,7 +1401,7 @@ class HtmlCommentsFailClosed(GuardTest):
         # so it cannot depend on the Python version.
         for name, body in self.MUST_FAIL.items():
             with self.subTest(name):
-                self.assertTrue(privacy_check.html_declarations(INDEX.replace("{BODY}", body)), name)
+                self.assertTrue(privacy_check.html_declarations(page(body)), name)
 
     def test_comment_in_head_reports_its_line(self):
         self.fx.write("dist/index.html", INDEX.replace("<head>", "<head>\n<!-- note -->"))
@@ -1391,17 +1413,21 @@ class HtmlCommentsFailClosed(GuardTest):
         self.assertFails("other.html:1", self.NEEDLE)
 
     def test_doctype_passes(self):
+        # Any case passes this check; only trunk's own spelling passes check 7.
         for doctype in ("<!doctype html>", "<!DOCTYPE html>", "<!DocType HTML>"):
             with self.subTest(doctype):
                 self.fx.write("dist/index.html", INDEX.replace("<!doctype html>", doctype))
                 self.fx.headers()
-                self.assertPasses()
+                if doctype == "<!doctype html>":
+                    self.assertPasses()
+                else:
+                    self.assertOnlyTemplateFails()
 
     def test_lookalikes_pass(self):
         # Escaped text and a `<` not followed by `!` or `?` are not markup.
         self.fx.html("<p>&lt;!-- a --&gt; &lt;?x?&gt; a < b ! c</p>")
         self.fx.headers()
-        self.assertPasses()
+        self.assertOnlyTemplateFails()
 
     def test_index_source_has_no_comment(self):
         """trunk copies index.html's comments into dist/index.html."""
@@ -1474,7 +1500,7 @@ class InlineCssFailsClosed(GuardTest):
         # finding, see HtmlCommentsFailClosed.)
         self.fx.html('<p data-style="x" class="style" title="style=x">style=x &lt;style&gt;</p>')
         self.fx.headers()
-        self.assertPasses()
+        self.assertOnlyTemplateFails()
 
     def test_real_built_index_html_passes(self):
         """The index.html `trunk build --release` writes, copied verbatim.
@@ -1501,6 +1527,195 @@ class InlineCssFailsClosed(GuardTest):
         self.fx.write("dist/index.html", text)
         self.fx.headers()
         self.assertPasses()
+
+
+REPO = Path(__file__).resolve().parent.parent
+BUILT_INDEX = Path(__file__).resolve().parent / "testdata" / "built-index.html"
+
+
+class IndexTemplateExact(GuardTest):
+    """#79: dist/index.html must be exactly INDEX_TEMPLATE, hashes aside.
+
+    html.parser cannot follow a browser into foreign content or insertion
+    modes, so markup a browser renders can be invisible to the parser-based
+    checks. The template match does not parse at all.
+    """
+
+    # The #79 payloads: a browser renders the markup after each, the
+    # parser-based checks miss it on 3.12 (and the first two on 3.15).
+    ISSUE_79 = {
+        "svg script img": '<svg><script><img src="//evil.example/x">',
+        "math script style": '<math><script><p style="a:b">',
+        "body title script": '<title><script></title><p style="a:b">',
+    }
+
+    def edit(self, fn) -> None:
+        path = self.fx.dist / "index.html"
+        path.write_bytes(fn(path.read_bytes().decode("utf-8")).encode("utf-8"))
+        self.fx.headers()
+
+    def assertTemplateFails(self, *needles: str) -> str:
+        rc, out = self.fx.run()
+        self.assertEqual(rc, 1, f"guard passed but should have failed:\n{out}")
+        self.assertIn(f"{privacy_check.TEMPLATE_FINDING} not the page trunk builds", out)
+        self.assertIn("update INDEX_TEMPLATE", out)
+        for needle in needles:
+            self.assertIn(needle, out)
+        return out
+
+    def test_template_matches_its_own_rendering(self):
+        self.assertPasses()
+        self.assertEqual(privacy_check.index_template_problems(INDEX), [])
+
+    def test_real_built_index_matches(self):
+        text = BUILT_INDEX.read_bytes().decode("utf-8")
+        self.assertEqual(privacy_check.index_template_problems(text), [])
+
+    @unittest.skipUnless((REPO / "dist" / "index.html").is_file(), "no dist/ build")
+    def test_live_dist_index_matches(self):
+        text = (REPO / "dist" / "index.html").read_bytes().decode("utf-8")
+        self.assertEqual(privacy_check.index_template_problems(text), [])
+
+    def test_issue_79_payloads_fail(self):
+        for name, body in self.ISSUE_79.items():
+            with self.subTest(name):
+                self.fx.html(body)
+                self.fx.headers()
+                # The diff quotes the payload, so the reader sees what changed.
+                self.assertTemplateFails(f"+  <body>{body}</body>")
+            with self.subTest(name, where="head"):
+                self.edit(lambda t: page("").replace("</title>", "</title>" + body))
+                self.assertTemplateFails()
+
+    def test_one_extra_element_fails(self):
+        for name, fn in {
+            "empty <p> in body": lambda t: t.replace("<body></body>", "<body><p></p></body>"),
+            "meta in head": lambda t: t.replace("    <title>", '    <meta name="x" content="y" />\n    <title>'),
+            "second loader": lambda t: t.replace("</script>", "</script><script></script>"),
+            "trailing element": lambda t: t + "<p></p>\n",
+            "extra icon": lambda t: t.replace("<body>", '<link rel="icon" href="/x.ico"><body>'),
+        }.items():
+            with self.subTest(name):
+                self.edit(fn)
+                self.assertTemplateFails()
+
+    def test_changed_attribute_fails(self):
+        for old, new in [
+            ('lang="en"', 'lang="fr"'),
+            ('crossorigin="anonymous"', 'crossorigin="use-credentials"'),
+            ('type="module"', 'type="text/javascript"'),
+            ('sizes="32x32"', 'sizes="16x16"'),
+            ('href="/favicon.svg"', 'href="//evil.example/favicon.svg"'),
+            ('<meta charset="utf-8" />', '<meta charset="utf-8">'),
+            ('<html lang="en">', '<html lang="en" dir="ltr">'),
+        ]:
+            with self.subTest(old=old, new=new):
+                self.edit(lambda t: t.replace(old, new, 1))
+                self.assertTemplateFails()
+
+    def test_reordered_tag_fails(self):
+        a = '    <link rel="icon" href="/favicon.ico" sizes="32x32" />\n'
+        b = '    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />\n'
+        self.edit(lambda t: t.replace(a + b, b + a))
+        self.assertTemplateFails()
+        self.fx.html()
+        meta = '    <meta charset="utf-8" />\n'
+        title = "    <title>paste2prompt</title>\n"
+        self.edit(lambda t: t.replace(meta, "").replace(title, title + meta))
+        self.assertTemplateFails()
+
+    def test_different_loader_script_fails(self):
+        for old, new in [
+            ("window.wasmBindings = bindings;", "window.b = bindings;"),
+            ("window.wasmBindings = bindings;\n", "window.wasmBindings = bindings;\nconsole.log(1);\n"),
+            ('"TrunkApplicationStarted"', '"Started"'),
+            ("import init, * as bindings", "import init"),
+            ("\n\n</script>", "\n</script>"),
+        ]:
+            with self.subTest(old=old):
+                self.edit(lambda t: t.replace(old, new, 1))
+                self.assertTemplateFails()
+
+    def test_whitespace_and_line_endings_fail(self):
+        for name, fn in {
+            "CRLF": lambda t: t.replace("\n", "\r\n"),
+            "one CR": lambda t: t.replace("<head>\n", "<head>\r\n"),
+            "no final newline": lambda t: t.rstrip("\n"),
+            "extra final newline": lambda t: t + "\n",
+            "blank indentation line stripped": lambda t: t.replace("    \n", "\n", 1),
+            "tab for spaces": lambda t: t.replace("    <title>", "\t<title>"),
+            "uppercase doctype": lambda t: t.replace("<!doctype html>", "<!DOCTYPE html>"),
+        }.items():
+            with self.subTest(name):
+                self.edit(fn)
+                self.assertTemplateFails()
+
+    def test_bad_placeholder_values_fail(self):
+        base = {"WASM_HASH": "2156fb54b2aac20d", "CSS_HASH": "e35af8effc3453c2",
+                "CSS_INTEGRITY": FAKE_INTEGRITY}
+        self.assertEqual(privacy_check.index_template_problems(privacy_check.render_index(base)), [])
+        for name, change in {
+            "uppercase hex": {"WASM_HASH": "2156FB54B2AAC20D"},
+            "17 hex digits": {"WASM_HASH": "2156fb54b2aac20d0"},
+            "empty hash": {"CSS_HASH": ""},
+            "non-hex hash": {"CSS_HASH": "e35af8effc3453cg"},
+            "path in hash": {"CSS_HASH": "1/../x"},
+            "short integrity": {"CSS_INTEGRITY": "A" * 63},
+            "long integrity": {"CSS_INTEGRITY": "A" * 65},
+            "padded integrity": {"CSS_INTEGRITY": "A" * 62 + "=="},
+            "url-safe base64": {"CSS_INTEGRITY": "-" + "A" * 63},
+            "quote in integrity": {"CSS_INTEGRITY": '"' + "A" * 63},
+        }.items():
+            with self.subTest(name):
+                text = privacy_check.render_index({**base, **change})
+                self.assertNotEqual(privacy_check.index_template_problems(text), [])
+
+    def test_glue_and_wasm_must_share_one_hash(self):
+        # A backreference, not four independent hex patterns.
+        self.edit(lambda t: t.replace("-1_bg.wasm' }", "-2_bg.wasm' }"))
+        self.assertTemplateFails()
+        self.fx.html()
+        self.edit(lambda t: t.replace('rel="modulepreload" href="/paste2prompt-web-1.js"',
+                                      'rel="modulepreload" href="/paste2prompt-web-2.js"'))
+        self.assertTemplateFails()
+
+    def test_diff_is_short(self):
+        self.fx.html("".join(f"<p>{i}</p>\n" for i in range(100)))
+        self.fx.headers()
+        out = self.assertTemplateFails("more diff lines")
+        self.assertLess(out.count(privacy_check.TEMPLATE_DIFF), 25, out)
+
+    def test_diff_fills_in_the_real_hashes(self):
+        text = BUILT_INDEX.read_bytes().decode("utf-8").replace('lang="en"', 'lang="fr"')
+        diff = privacy_check.index_template_problems(text)
+        self.assertEqual(diff, ["@@ -2 +2 @@", '-<html lang="en">', '+<html lang="fr">'])
+
+    def test_other_top_level_html_fails(self):
+        for name in ("other.html", "404.html", "Index.HTML"):
+            if name.lower() == "index.html" and (self.fx.dist / name).exists():
+                continue  # the same file on a case-insensitive file system
+            with self.subTest(name):
+                self.fx.write(f"dist/{name}", INDEX)
+                self.assertFails(f"{name}: HTML file other than index.html")
+                (self.fx.dist / name).unlink()
+
+    def test_template_tracks_the_source_page(self):
+        """Every non-trunk line of crates/web/index.html is in the template, in order.
+
+        A cheap check that an edit to the source came with a template update;
+        the guard on a real build is the full one.
+        """
+        src = (REPO / "crates" / "web" / "index.html").read_text(encoding="utf-8")
+        pos = 0
+        for line in src.splitlines():
+            if "data-trunk" in line or not line.strip():
+                continue
+            at = privacy_check.INDEX_TEMPLATE.find(line.strip(), pos)
+            self.assertGreaterEqual(at, 0, f"{line.strip()!r} from crates/web/index.html is not "
+                                    "in INDEX_TEMPLATE (after the previous line); update it")
+            pos = at + len(line.strip())
+        n_trunk = src.count("data-trunk")
+        self.assertEqual(n_trunk, 4, "a data-trunk link was added or removed; update INDEX_TEMPLATE")
 
 
 if __name__ == "__main__":

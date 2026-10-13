@@ -2,6 +2,9 @@
 # index.html can hold no HTML comment: trunk copies comments into
 # dist/index.html, and the privacy guard rejects every one there (#76). Notes
 # about index.html go here instead:
+# - dist/index.html must match INDEX_TEMPLATE in scripts/privacy_check.py
+#   exactly (#79). Editing index.html, or upgrading trunk, means updating that
+#   template and scripts/testdata/built-index.html in the same change.
 # - data-integrity="none" on the rust link: trunk would put an integrity hash
 #   on the .wasm preload, which Chrome ignores with a console warning (crbug
 #   981419). Both preloads are same-origin and script-src is 'self' plus a
