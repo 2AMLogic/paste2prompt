@@ -7,11 +7,13 @@ an image in, mark regions and say what should happen to them, and copy out a
 single PNG you can paste into any multimodal LLM chat. Your image never leaves
 your machine.
 
-> **Status:** pre-alpha. The design is settled and the code is not written yet.
+> **Status:** early. The v1 flow below works end to end; the full design is in
+> [`docs/SPEC.md`](docs/SPEC.md).
 
 ## How it works
 
-1. **Paste** an image from the clipboard (`⌘V` / `Ctrl+V`).
+1. **Load** an image: paste it from the clipboard (`⌘V` / `Ctrl+V`), open a
+   file (**Open** or `⌘O` / `Ctrl+O`), or drag and drop it onto the window.
 2. **Mark a region** with the rectangle or lasso tool.
 3. **Attach a transformation** to that region:
    - translate
@@ -23,7 +25,8 @@ your machine.
 5. **Add image-level instructions** in the text box at the bottom.
 6. **Copy out** one PNG: the original image with numbered annotations drawn on
    it, plus a caption block rendered below that lists every transformation in
-   order and the image-level text.
+   order and the image-level text. Where the browser can't put an image on the
+   clipboard, download the PNG instead.
 
 Paste that PNG into Claude, ChatGPT, Gemini or a coding agent. The image
 describes itself, so the model doesn't need a plugin, a schema or an API.
@@ -68,7 +71,11 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check licenses   # needs cargo-deny; permissive licenses only
+python3 -B scripts/test_privacy_check.py
 ```
+
+CI also builds the site with trunk and runs the privacy guard on `dist/`
+(see Deploy).
 
 ## Deploy
 
