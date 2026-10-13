@@ -3,7 +3,7 @@
 
 CLAUDE.md rule 1: no network calls with user content. The only request the
 page may make is loading its own static assets (the .js glue and the .wasm,
-from the same origin). This script checks that, in six places:
+from the same origin). This script checks that, in seven places:
 
 Every file in dist/ is walked once and dispatched on its lowercased suffix,
 so `x.JS` is scanned exactly like `x.js`. A file type the guard does not know
@@ -17,7 +17,7 @@ fails closed instead of going unscanned.
    wasm-bindgen's own .wasm loader, matched as exact source lines and only in
    the one glue file that index.html's inline loader imports (see
    LOADER_ALLOWLIST). Any other JS file gets no allowance.
-2. HTML: only top-level .html is allowed. Inline scripts (trunk's loader) use
+2. HTML: only top-level .html is allowed (and only index.html, see 7). Inline scripts (trunk's loader) use
    no network API, no URL attribute (src, href, srcset, poster, action, ...)
    names another origin, and there is no `<meta http-equiv="refresh">`. No
    inline CSS at all: any `<style>` element or `style` attribute is a finding
@@ -74,6 +74,24 @@ fails closed instead of going unscanned.
    from write_headers.py: a render path that appended a block or a `!` line
    would move the expected value with the file. `wrangler deploy` runs only
    this guard, not the tests, so these properties have to hold here.
+7. dist/index.html must be exactly INDEX_TEMPLATE (#79): the page trunk
+   0.21.14 builds from crates/web/index.html, inline loader included, with
+   only trunk's content hashes in file names (1-16 lowercase hex digits, one
+   hash shared by the .js glue and the .wasm) and the stylesheet's
+   sha384 integrity value (64 base64 characters) left variable. Any other
+   byte difference, an extra element, a changed attribute, a reordered tag,
+   another loader script, a \\r, is a finding with a short diff. Any
+   top-level .html other than index.html is a finding too. This ends a run of
+   parser-mismatch bypasses (#67, #76, #79): html.parser has no tree
+   construction, so it cannot follow a browser into foreign content
+   (`<svg><script>` is not script data there) or insertion modes, and its
+   raw-text elements differ by Python version (`<title>` in the body before
+   3.14). The parser-based checks in (2) still run, as defense in depth and
+   for a readable finding on a page that does not match.
+   UPGRADING TRUNK OR EDITING crates/web/index.html REQUIRES UPDATING
+   INDEX_TEMPLATE (and scripts/testdata/built-index.html) in the same change:
+   rebuild, review the guard's diff, and copy the new page's fixed parts into
+   the template. The guard's failure message says so.
 
 Navigation (`open(`, `location = ...`, `location.href|host|hostname|... =`,
 `location[...]`, `location.assign`, `location.replace`) can also carry data
@@ -386,6 +404,162 @@ def html_declarations(text: str) -> list[tuple[int, str]]:
     """(line, text) of every `<!` but the doctype, and every `<?`, in HTML."""
     return [(text.count("\n", 0, m.start()) + 1, text[m.start():m.start() + 40])
             for m in HTML_DECLARATION.finditer(text)]
+
+
+# #79: dist/index.html must be exactly what trunk builds from
+# crates/web/index.html. html.parser has no tree construction, so it cannot
+# follow a browser into foreign content (<svg>, <math>) or insertion modes,
+# and which elements it reads as raw text differs by Python version (#67,
+# #76, #79 were each one more such gap). Instead of modelling the browser,
+# the guard pins the page, the way check 6 pins _headers: the only variable
+# parts are the content hashes trunk puts in file names and the stylesheet's
+# Subresource Integrity value, each matched by a strict pattern. Every other
+# byte, including the inline loader, whitespace and line endings, is fixed.
+#
+# The template is trunk 0.21.14's output for crates/web/index.html: the rust
+# link becomes LOADER_TEMPLATE (after a newline), the css link becomes the
+# hashed stylesheet link, each copy-file link becomes nothing (its
+# indentation stays), and trunk appends the modulepreload/preload links
+# before </head>. Upgrading trunk or editing crates/web/index.html changes
+# the page, and the guard fails until INDEX_TEMPLATE is updated to the new
+# build's output (review the diff the guard prints, then refresh
+# scripts/testdata/built-index.html too).
+#
+# Placeholders: trunk formats its seahash u64 as unpadded lowercase hex
+# (`{:x}`), so 1 to 16 hex digits; the .js glue and the .wasm share one hash.
+# The integrity value is a sha384 digest in standard base64: 48 bytes, so
+# exactly 64 characters and no padding.
+INDEX_PLACEHOLDERS = {
+    "WASM_HASH": r"[0-9a-f]{1,16}",
+    "CSS_HASH": r"[0-9a-f]{1,16}",
+    "CSS_INTEGRITY": r"[A-Za-z0-9+/]{64}",
+}
+_INDEX_PLACEHOLDER = re.compile(r"\{(" + "|".join(INDEX_PLACEHOLDERS) + r")\}")
+
+# trunk's inline loader for the wasm-bindgen glue, byte for byte.
+LOADER_TEMPLATE = (
+    '<script type="module">\n'
+    "import init, * as bindings from '/paste2prompt-web-{WASM_HASH}.js';\n"
+    "const wasm = await init({ module_or_path: '/paste2prompt-web-{WASM_HASH}_bg.wasm' });\n"
+    "\n"
+    "\n"
+    "window.wasmBindings = bindings;\n"
+    "\n"
+    "\n"
+    'dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));\n'
+    "\n"
+    "</script>"
+)
+
+# The whole of dist/index.html. Lines holding only indentation are where a
+# data-trunk link was; they are spelled out so no editor can strip them.
+INDEX_TEMPLATE = (
+    "<!doctype html>\n"
+    '<html lang="en">\n'
+    "  <head>\n"
+    '    <meta charset="utf-8" />\n'
+    '    <meta name="viewport" content="width=device-width, initial-scale=1" />\n'
+    "    <title>paste2prompt</title>\n"
+    "    \n"
+    f"{LOADER_TEMPLATE}\n"
+    '    <link rel="stylesheet" href="/style-{CSS_HASH}.css" integrity="sha384-{CSS_INTEGRITY}"/>\n'
+    "    \n"
+    "    \n"
+    '    <link rel="icon" href="/favicon.ico" sizes="32x32" />\n'
+    '    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />\n'
+    '  <link rel="modulepreload" href="/paste2prompt-web-{WASM_HASH}.js" crossorigin="anonymous">'
+    '<link rel="preload" href="/paste2prompt-web-{WASM_HASH}_bg.wasm" crossorigin="anonymous" '
+    'as="fetch" type="application/wasm"></head>\n'
+    "  <body></body>\n"
+    "</html>\n"
+)
+
+# Prefix of every check-7 finding line, and of each diff line under it. The
+# diff lines quote the page, so tests that look for another check's message
+# skip them (TEMPLATE_DIFF).
+TEMPLATE_FINDING = "[index template]"
+TEMPLATE_DIFF = TEMPLATE_FINDING + " |"
+TEMPLATE_HELP = (
+    "not the page trunk builds from crates/web/index.html (INDEX_TEMPLATE in "
+    "scripts/privacy_check.py). If you upgraded trunk or edited crates/web/index.html, "
+    "rebuild, review the new dist/index.html and update INDEX_TEMPLATE (and "
+    "scripts/testdata/built-index.html) to match; never edit dist/index.html. "
+    "Expected (-) vs actual (+):"
+)
+
+
+def index_template_regex(template: str = INDEX_TEMPLATE) -> re.Pattern[str]:
+    """The template as a regex: literal text escaped, placeholders as groups.
+
+    A placeholder's first use is a named group; later uses are
+    backreferences, so the glue and wasm names must carry the same hash.
+    """
+    parts, seen, pos = [], set(), 0
+    for m in _INDEX_PLACEHOLDER.finditer(template):
+        parts.append(re.escape(template[pos:m.start()]))
+        name = m.group(1)
+        parts.append(f"(?P={name})" if name in seen else f"(?P<{name}>{INDEX_PLACEHOLDERS[name]})")
+        seen.add(name)
+        pos = m.end()
+    parts.append(re.escape(template[pos:]))
+    return re.compile("".join(parts))
+
+
+def render_index(values: dict[str, str], template: str = INDEX_TEMPLATE) -> str:
+    """The template with placeholders filled in (unknown ones left as written)."""
+    return _INDEX_PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), template)
+
+
+# Used only to fill in the expected page for the diff when the page does not
+# match; a match never depends on these.
+_GUESS = {
+    "WASM_HASH": re.compile(r"/paste2prompt-web-([0-9a-f]{1,16})\.js"),
+    "CSS_HASH": re.compile(r"/style-([0-9a-f]{1,16})\.css"),
+    "CSS_INTEGRITY": re.compile(r'integrity="sha384-([A-Za-z0-9+/]{64})"'),
+}
+
+
+def index_template_problems(text: str) -> list[str]:
+    """[] if text is exactly INDEX_TEMPLATE filled in, else the diff lines."""
+    if index_template_regex().fullmatch(text):
+        return []
+    values = {}
+    for name, pattern in _GUESS.items():
+        m = pattern.search(text)
+        if m:
+            values[name] = m.group(1)
+    expected = render_index(values)
+    # keepends, so a changed line ending or a missing final newline shows up.
+    diff = list(difflib.unified_diff(
+        expected.splitlines(keepends=True), text.splitlines(keepends=True), lineterm="", n=0,
+    ))[2:]
+    lines = []
+    for d in diff:
+        line = d.rstrip("\n").replace("\r", "\\r")
+        if d[:1] in "+-" and not d.endswith("\n"):
+            line += "  (no newline at end)"
+        lines.append(line)
+    if not lines:
+        lines = ["(no line differs; check the placeholders' formats)"]
+    if len(lines) > 20:
+        lines = lines[:20] + [f"... {len(lines) - 20} more diff lines"]
+    return lines
+
+
+def check_index_template(path: Path, f: Findings) -> None:
+    where = str(path)
+    try:
+        # Bytes, not read_text(): universal newlines would hide a \r.
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as e:
+        f.add(where, f"{TEMPLATE_FINDING} not UTF-8: {e}")
+        return
+    problems = index_template_problems(text)
+    if not problems:
+        return
+    f.add(where, f"{TEMPLATE_FINDING} {TEMPLATE_HELP}")
+    for line in problems:
+        f.add(where, f"{TEMPLATE_DIFF} {line[:200]}")
 
 
 def _attr_urls(key: str, value: str) -> list[str]:
@@ -1013,7 +1187,12 @@ def main(argv: list[str]) -> int:
             js.append(path)
         elif suffix == ".html":
             if path.parent == dist:
+                # Still parsed (defense in depth), but trunk writes only
+                # index.html, so any other page is a finding (#79).
                 html.append(path)
+                if path.name != "index.html":
+                    f.add(str(path), "HTML file other than index.html; trunk writes only "
+                          "index.html, which must match INDEX_TEMPLATE")
             else:
                 f.add(str(path), "HTML outside the dist root is not allowed")
         elif suffix == ".css":
@@ -1035,6 +1214,7 @@ def main(argv: list[str]) -> int:
         print(f"privacy_check: {dist} has no .js or .wasm; build first", file=sys.stderr)
         return 1
 
+    check_index_template(index, f)
     inline: list[str] = []
     for path in html:
         scripts = check_html(path, f)
@@ -1061,7 +1241,8 @@ def main(argv: list[str]) -> int:
         return 1
     print(
         f"privacy_check: OK ({len(js)} JS, {len(html)} HTML, {len(svg)} SVG, {len(wasm)} wasm with "
-        f"{n_imports} imports, crates/web sources and {n_crate_js} crate JS, _headers exact)"
+        f"{n_imports} imports, crates/web sources and {n_crate_js} crate JS, index.html and "
+        "_headers exact)"
     )
     return 0
 
