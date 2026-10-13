@@ -80,17 +80,18 @@ CI also builds the site with trunk and runs the privacy guard on `dist/`
 ## Deploy
 
 paste2prompt.com is a Cloudflare Workers static-assets site in the 2AM
-Logic account (`wrangler.jsonc`). Deploy from a clean checkout of `main`:
+Logic account (`wrangler.jsonc`). Deploy from a clean checkout of `main`,
+with a Cloudflare API token scoped to this site exported as
+`CLOUDFLARE_API_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID`). Load them from your own
+credential store; never put them in the repo:
 
 ```sh
-set -a; . ~/.cloudflare/2amlogic/paste2prompt-deploy.env; set +a
 npm ci
 npx --no-install wrangler deploy
 ```
 
 `wrangler deploy` runs the build step: trunk, then `scripts/write_headers.py`,
-then the privacy guard. If the guard fails, nothing is uploaded. The token is
-`paste2prompt-deploy` in 2am's `infra/cloudflare/token-manifest.yml`.
+then the privacy guard. If the guard fails, nothing is uploaded.
 
 The zone keeps every script-injecting feature off: Rocket Loader, Web
 Analytics automatic setup, Zaraz. `www` redirects to the apex with a 301.
