@@ -3,9 +3,10 @@
 //! store and the screen-to-image mapping never go stale. Also the DOM side
 //! of `arrange`: measuring the space and sizing the stage.
 //!
-//! - A `ResizeObserver` on the canvas, its column and the workspace catches
-//!   every size change: a window resize, the panel un-hiding, a classic
-//!   scrollbar appearing, the instructions box being resized. (A window
+//! - A `ResizeObserver` on the canvas, its column, the instructions box and
+//!   the workspace catches every size change: a window resize, the panel
+//!   un-hiding, a classic scrollbar appearing, the instructions box being
+//!   resized. (A window
 //!   that only gets taller changes none of these; the canvas view listens
 //!   for the window's `resize` event for that.)
 //! - A `matchMedia("(resolution: <dpr>dppx)")` listener catches a DPR
@@ -30,10 +31,10 @@ use super::arrange::Space;
 /// the canvas column.
 const PAGE_BOTTOM: f64 = 16.0;
 
-/// Measures the space the workspace has, from the workspace and the stage
-/// (whose parent is the canvas column). `None` while the workspace isn't
-/// laid out (hidden).
-pub fn measure_space(workspace: &Element, stage: &Element) -> Option<Space> {
+/// Measures the space the workspace has, and the instructions box's
+/// height (`arrange` decides where that height is spent). `None` while the
+/// workspace isn't laid out (hidden).
+pub fn measure_space(workspace: &Element, instructions: Option<&Element>) -> Option<Space> {
     let window = window();
     let ws = workspace.get_bounding_client_rect();
     if ws.width() < 1.0 {
@@ -51,14 +52,11 @@ pub fn measure_space(workspace: &Element, stage: &Element) -> Option<Space> {
     );
     // Page coordinates, so the result doesn't depend on the scroll position.
     let top = ws.top() + window.scroll_y().unwrap_or(0.0);
-    let stage_h = stage.get_bounding_client_rect().height();
-    let under_stage = stage.parent_element().map_or(0.0, |column| {
-        (column.get_bounding_client_rect().height() - stage_h).max(0.0)
-    });
+    let instructions_h = instructions.map_or(0.0, |e| e.get_bounding_client_rect().height());
     Some(Space {
         width: ws.width().floor(),
         height: (viewport_h - top - PAGE_BOTTOM).floor(),
-        under_stage: under_stage.ceil(),
+        instructions_h: instructions_h.ceil(),
     })
 }
 

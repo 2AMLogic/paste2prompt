@@ -113,36 +113,63 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
-/* Canvas column (canvas + instructions) and the history panel (#11), beside
-   it (.side) or below it (.below), whichever shows the image larger
-   (canvas/arrange.rs, #69). The pixel sizes here are Chrome::DEFAULT in
-   arrange.rs: keep the two in step. */
+/* The stage, the instructions box and the history panel (#11). Side: the
+   instructions and, under them, the panel in a column beside the stage,
+   which keeps the full height (#73). Below: all three stacked, for wide
+   images and phones. The canvas picks whichever shows the image larger
+   (canvas/arrange.rs, #69). The DOM is the same in both; only the grid
+   areas change, so the textarea is never remounted and keeps its focus.
+   The pixel sizes here are Chrome::DEFAULT in arrange.rs (row gap
+   stack_gap, column gap gap, panel min-width panel_side_w): keep them in
+   step. */
 .workspace {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
+  display: grid;
+  gap: 8px 16px;
+  align-items: start;
 }
 
 .workspace-main {
-  flex: 0 0 auto;
-  min-width: min(20rem, 100%);
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  grid-area: main;
 }
 
-.workspace.side .history-panel {
-  flex: 1 1 300px;
-  min-width: 300px;
+.workspace.side .workspace-main {
+  min-width: 20rem;
+}
+
+.workspace > .instructions {
+  grid-area: instr;
+}
+
+.workspace > .history-panel {
+  grid-area: panel;
+}
+
+/* The stage's column is exactly as wide as the stage (arrange.rs leaves
+   room for the side column); the side column takes the rest, up to 28rem.
+   The second row takes whatever height the stage needs beyond the
+   instructions box, so the panel sits right under the instructions. */
+.workspace.side {
+  grid-template-columns: max-content minmax(300px, 28rem);
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "main instr"
+    "main panel";
+  justify-content: start;
 }
 
 .workspace.below {
-  flex-direction: column;
-  align-items: stretch;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    "main"
+    "instr"
+    "panel";
 }
 
+/* 16px from the instructions box (the 8px row gap plus this), the gap
+   the panel had under the canvas column before #73. */
 .workspace.below .history-panel {
   max-width: none;
+  margin-top: 8px;
 }
 
 .instructions {
@@ -151,9 +178,14 @@ h1 {
   gap: 0.25rem;
 }
 
+/* One line at any width, so the box is the same height in both
+   arrangements (arrange.rs measures it once for both). */
 .instructions-label {
   font-size: 0.9rem;
   opacity: 0.8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .instructions-input {

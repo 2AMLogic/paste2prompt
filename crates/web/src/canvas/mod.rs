@@ -73,9 +73,12 @@ pub struct CanvasState {
     /// (e.g. a duplicate), shown under the field until the next valid name,
     /// blur, or another selection.
     pub name_error: RwSignal<Option<(EditId, String)>>,
-    /// The `.workspace` element (canvas column plus history panel), which
-    /// the canvas measures to size itself (#69).
+    /// The `.workspace` element (canvas column, instructions box and
+    /// history panel), which the canvas measures to size itself (#69).
     pub workspace: NodeRef<html::Div>,
+    /// The instructions box, whose height the canvas budgets under the
+    /// stage or not, by arrangement (#73).
+    pub instructions: NodeRef<html::Label>,
     /// Where the history panel sits, chosen by the canvas from the image's
     /// shape; `App` puts [`Arrangement::class`] on the workspace.
     pub arrangement: RwSignal<Arrangement>,
@@ -90,6 +93,7 @@ impl CanvasState {
             name_input: NodeRef::new(),
             name_error: RwSignal::new(None),
             workspace: NodeRef::new(),
+            instructions: NodeRef::new(),
             arrangement: RwSignal::new(Arrangement::default()),
         };
         provide_context(state);
@@ -179,6 +183,12 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
                 .get_untracked()
                 .map(|w| web_sys::Element::clone(&w)),
         );
+        targets.extend(
+            state
+                .instructions
+                .get_untracked()
+                .map(|e| web_sys::Element::clone(&e)),
+        );
         let targets: Vec<&web_sys::Element> = targets.iter().collect();
         // Local (not Send) storage; disposing it drops the watches, which
         // disconnects the observer and removes the media listener.
@@ -213,10 +223,10 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
         let Some(size) = img.size() else { return };
         let last = laid_out.get_value();
         if last != Some((generation, size)) {
-            let space = state
-                .workspace
-                .get_untracked()
-                .and_then(|ws| layout::measure_space(&ws, &canvas));
+            let instructions = state.instructions.get_untracked();
+            let space = state.workspace.get_untracked().and_then(|ws| {
+                layout::measure_space(&ws, instructions.as_ref().map(|e| e.as_ref()))
+            });
             let Some(space) = space else {
                 // Not laid out yet (just un-hidden): try again next frame.
                 request_animation_frame(bump);
