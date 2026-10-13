@@ -4,9 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>paste2prompt</title>
-    <!-- data-integrity="none": trunk would put an integrity hash on the .wasm
-         preload, which Chrome ignores with a console warning (crbug 981419).
-         Both preloads are same-origin and script-src is 'self' plus a hash. -->
     <link data-trunk rel="rust" data-bin="paste2prompt-web" data-wasm-opt="s" data-integrity="none" />
     <link data-trunk rel="css" href="style.css" />
     <link data-trunk rel="copy-file" href="favicon.svg" />

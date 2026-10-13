@@ -1330,6 +1330,85 @@ class W3cNamespaces(GuardTest):
         self.assertFails("n.js:1", "string literal naming another origin")
 
 
+class HtmlCommentsFailClosed(GuardTest):
+    """#76: no comment, declaration or processing instruction in dist/*.html.
+
+    Browsers end a comment early at `<!-->`, `<!--->` and `--!>`, and treat
+    `<![CDATA[` in HTML as a bogus comment that ends at the first `>`.
+    html.parser on Python 3.12 and older (CI's system python3) keeps going
+    to the next `-->` or `]]>`, so markup a browser renders was never seen
+    by the checks that parse the page. The guard rejects every `<!` but the
+    doctype, and every `<?`, before parsing, so the result is the same on
+    every Python version. Each case hides something check 2 must report.
+    """
+
+    NEEDLE = "comment, declaration or processing instruction"
+    STYLE = "<style>a{}</style>"
+    IMG = '<img src="//evil.example/x">'
+    MUST_FAIL = {
+        # The abrupt forms from the issue, each with a style and an external img.
+        "<!--> + style": f"<!-->{STYLE}-->",
+        "<!--> + img": f"<!-->{IMG}-->",
+        "<!---> + style": f"<!--->{STYLE}-->",
+        "<!---> + img": f"<!--->{IMG}-->",
+        "--!> + style": f"<!-- x --!>{STYLE}-->",
+        "--!> + img": f"<!-- x --!>{IMG}-->",
+        "nested <!-- + img": f"<!-- a <!-- b -->{IMG}-->",
+        "unterminated + img": f"<!-- {IMG}",
+        "CDATA + img": f"<![CDATA[ x >{IMG}]]>",
+        "uppercase <!DOCTYPE in body + img": f"<!DOCTYPE x>{IMG}",
+        "bogus <!x> + style": f"<!x>{STYLE}",
+        "processing instruction + img": f"<?x >{IMG}?>",
+        # A well-formed comment fails too: the rule is flat, so it cannot be
+        # argued with by a comment that one parser reads differently.
+        "plain comment": f"<!-- {STYLE} -->",
+        "comment in <title> (RCDATA in a browser)": f"<title><!--</title>{IMG}-->",
+        "comment in <noscript>": f"<noscript><!--</noscript>{IMG}-->",
+        "comment in an inline script": "<script>a<!--b</script>",
+    }
+
+    def test_must_fail(self):
+        for name, body in self.MUST_FAIL.items():
+            with self.subTest(name):
+                self.fx.html(body)
+                self.fx.headers()
+                self.assertFails("index.html:", self.NEEDLE)
+
+    def test_must_fail_whatever_html_parser_does(self):
+        # The finding comes from a scan of the raw text, not from the parser,
+        # so it cannot depend on the Python version.
+        for name, body in self.MUST_FAIL.items():
+            with self.subTest(name):
+                self.assertTrue(privacy_check.html_declarations(INDEX.replace("{BODY}", body)), name)
+
+    def test_comment_in_head_reports_its_line(self):
+        self.fx.write("dist/index.html", INDEX.replace("<head>", "<head>\n<!-- note -->"))
+        self.fx.headers()
+        self.assertFails("index.html:4", self.NEEDLE)
+
+    def test_any_top_level_html_is_checked(self):
+        self.fx.write("dist/other.html", f"<!-->{self.IMG}-->\n")
+        self.assertFails("other.html:1", self.NEEDLE)
+
+    def test_doctype_passes(self):
+        for doctype in ("<!doctype html>", "<!DOCTYPE html>", "<!DocType HTML>"):
+            with self.subTest(doctype):
+                self.fx.write("dist/index.html", INDEX.replace("<!doctype html>", doctype))
+                self.fx.headers()
+                self.assertPasses()
+
+    def test_lookalikes_pass(self):
+        # Escaped text and a `<` not followed by `!` or `?` are not markup.
+        self.fx.html("<p>&lt;!-- a --&gt; &lt;?x?&gt; a < b ! c</p>")
+        self.fx.headers()
+        self.assertPasses()
+
+    def test_index_source_has_no_comment(self):
+        """trunk copies index.html's comments into dist/index.html."""
+        src = Path(__file__).resolve().parent.parent / "crates" / "web" / "index.html"
+        self.assertEqual(privacy_check.html_declarations(src.read_text(encoding="utf-8")), [])
+
+
 class InlineCssFailsClosed(GuardTest):
     """#67: any <style> element or style attribute in dist/*.html is a finding.
 
@@ -1390,11 +1469,10 @@ class InlineCssFailsClosed(GuardTest):
         self.assertFails("other.html", self.STYLE_ATTR)
 
     def test_lookalikes_pass(self):
-        # Not an element or attribute named style: text, other attribute
-        # names, a comment, and markup inside a script string (runtime
-        # markup is out of scope here; the CSP blocks it).
-        self.fx.html('<p data-style="x" class="style" title="style=x">style=x &lt;style&gt;</p>'
-                     "<!-- <style>a{}</style> -->")
+        # Not an element or attribute named style: text and other attribute
+        # names. (A comment is no longer a lookalike: any comment is a
+        # finding, see HtmlCommentsFailClosed.)
+        self.fx.html('<p data-style="x" class="style" title="style=x">style=x &lt;style&gt;</p>')
         self.fx.headers()
         self.assertPasses()
 

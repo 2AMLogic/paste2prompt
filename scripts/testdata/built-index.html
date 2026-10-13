@@ -4,13 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>paste2prompt</title>
-    <!-- data-integrity="none": trunk would put an integrity hash on the .wasm
-         preload, which Chrome ignores with a console warning (crbug 981419).
-         Both preloads are same-origin and script-src is 'self' plus a hash. -->
     
 <script type="module">
-import init, * as bindings from '/paste2prompt-web-51b82b230cadc1f8.js';
-const wasm = await init({ module_or_path: '/paste2prompt-web-51b82b230cadc1f8_bg.wasm' });
+import init, * as bindings from '/paste2prompt-web-2156fb54b2aac20d.js';
+const wasm = await init({ module_or_path: '/paste2prompt-web-2156fb54b2aac20d_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -19,11 +16,11 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
-    <link rel="stylesheet" href="/style-8d3522300fbd0d7f.css" integrity="sha384-D8gxZeJzvJcpuV57qjv1gWGnq8dZEThb2mabYLmO4s6OjZMmJcB8Dawy7gaC6jHJ"/>
+    <link rel="stylesheet" href="/style-e35af8effc3453c2.css" integrity="sha384-ryV5pAV2mhYK/2qooW+UitTmg43Y4/fdFf8Dc3cMF2b0GQ2lRD8j2dSKzPdqx7iB"/>
     
     
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="modulepreload" href="/paste2prompt-web-51b82b230cadc1f8.js" crossorigin="anonymous"><link rel="preload" href="/paste2prompt-web-51b82b230cadc1f8_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/paste2prompt-web-2156fb54b2aac20d.js" crossorigin="anonymous"><link rel="preload" href="/paste2prompt-web-2156fb54b2aac20d_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm"></head>
   <body></body>
 </html>

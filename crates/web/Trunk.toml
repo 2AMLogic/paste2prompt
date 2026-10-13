@@ -1,4 +1,11 @@
 [build]
+# index.html can hold no HTML comment: trunk copies comments into
+# dist/index.html, and the privacy guard rejects every one there (#76). Notes
+# about index.html go here instead:
+# - data-integrity="none" on the rust link: trunk would put an integrity hash
+#   on the .wasm preload, which Chrome ignores with a console warning (crbug
+#   981419). Both preloads are same-origin and script-src is 'self' plus a
+#   hash.
 target = "index.html"
 # Output to the repo-root dist/ (gitignored) so hosting has one fixed path.
 dist = "../../dist"
