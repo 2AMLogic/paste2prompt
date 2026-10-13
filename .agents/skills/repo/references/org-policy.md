@@ -150,11 +150,35 @@ python3 .claude/skills/repo/scripts/repo-org-policy.py check-app \
   --owner OWNER   # or: --repo OWNER/PROJECT to derive the owner from origin
 ```
 
-`UNKNOWN` means this token cannot see the installations endpoint for that
-account — a non-admin org member, or any personal account other than the
-caller's own (`user/installations` only lists installations for whoever is
-authenticated) — not that the App is confirmed present. Report `UNKNOWN`
-as-is rather than treating it as either outcome.
+For an organization, the answer comes from `orgs/OWNER/installations` and is
+authoritative; `UNKNOWN` there means this token cannot see that endpoint (a
+non-admin org member) — not that the App is confirmed present. Report it as-is
+rather than treating it as either outcome.
+
+A personal account almost never has an authoritative answer: `user/installations`
+only accepts a token issued by a GitHub App (a classic or `gh` OAuth token gets
+a `403` whatever its scopes), and no endpoint lists another user's Apps. So
+for a `User` account whose installations cannot be read, `check-app` falls
+back to behavioral evidence — a REST search for issues/PRs authored by
+`app/renovate` active in the last 30 days in OWNER's repositories — and, when
+a client `OWNER/REPO` is known (`plan`/`apply`, or `check-app --repo`; not an
+unrelated `--owner`), in that repository too:
+
+```text
+Renovate GitHub App: installed (evidence: 42 renovate[bot] issues/PRs active in
+OWNER's repositories in the last 30 days, most recent 2026-10-12). Coverage of
+OWNER/REPO confirmed: 3 renovate[bot] issues/PRs active there, most recent
+2026-10-11.
+```
+
+When there is account-level activity but none in the repository (or no
+repository was given), the line says coverage of that repository is **not
+verified** — it may be outside the App's repository selection — and points at
+`https://github.com/settings/installations`. With no activity at all, or when
+the search itself fails, the line stays `UNKNOWN` (never `NOT installed`:
+a fresh install, or one with onboarding turned off, leaves no footprint yet)
+and also names that settings URL. Report an evidence-backed line as evidence,
+not proof, and relay any "not verified" coverage caveat.
 
 ## Installed files and client adoption
 

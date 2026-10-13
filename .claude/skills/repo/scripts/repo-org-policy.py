@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode, urlparse
 
@@ -22,6 +23,8 @@ SOURCE_REPO = "rjwalters/repo"
 MANAGED_FILES = {"repo-policy.json", "renovate-config.json"}
 RENOVATE_APP_SLUG = "renovate"
 RENOVATE_INSTALL_URL = "https://github.com/apps/renovate"
+USER_INSTALLATIONS_URL = "https://github.com/settings/installations"
+APP_EVIDENCE_DAYS = 30
 
 
 class PolicyError(Exception):
@@ -181,10 +184,15 @@ def check_app_installed(api, owner, app_slug=RENOVATE_APP_SLUG):
     only lists the authenticated user's own installations, and there is no
     equivalent endpoint for an arbitrary third-party personal account).
     """
+    return _check_app_installed(api, owner, app_slug)[0]
+
+
+def _check_app_installed(api, owner, app_slug=RENOVATE_APP_SLUG):
+    """check_app_installed plus the account type it observed (or None)."""
     try:
         account = api.api(f"users/{owner}")
     except PolicyError:
-        return None
+        return None, None
     account_type = account.get("type") if account else None
     try:
         if account_type == "Organization":
@@ -192,17 +200,90 @@ def check_app_installed(api, owner, app_slug=RENOVATE_APP_SLUG):
         elif account_type == "User":
             viewer = api.api("user")
             if not viewer or viewer.get("login", "").lower() != owner.lower():
-                return None
+                return None, account_type
+            # Only a GitHub App user-to-server token may call this; a classic
+            # or gh OAuth token gets a 403 whatever its scopes, so on personal
+            # accounts this is usually None and the caller falls back to
+            # app_activity_evidence().
             installations = api.api("user/installations")
         else:
-            return None
+            return None, account_type
+    except PolicyError:
+        return None, account_type
+    entries = (installations or {}).get("installations", [])
+    return any(entry.get("app_slug") == app_slug for entry in entries), account_type
+
+
+def _search_app_activity(api, query):
+    """(total_count, most recent updated date) for an issue search, or None on failure."""
+    endpoint = "search/issues?" + urlencode(
+        {"q": query, "sort": "updated", "order": "desc", "per_page": 1})
+    try:
+        result = api.api(endpoint)
     except PolicyError:
         return None
-    entries = (installations or {}).get("installations", [])
-    return any(entry.get("app_slug") == app_slug for entry in entries)
+    if not isinstance(result, dict) or not isinstance(result.get("total_count"), int):
+        return None
+    items = result.get("items") or []
+    latest = None
+    if items and isinstance(items[0], dict):
+        latest = (items[0].get("updated_at") or items[0].get("created_at") or "")[:10] or None
+    return result["total_count"], latest
 
 
-def app_status_line(installed, app_slug=RENOVATE_APP_SLUG, install_url=RENOVATE_INSTALL_URL):
+def app_activity_evidence(api, owner, repo=None, app_slug=RENOVATE_APP_SLUG,
+                          days=APP_EVIDENCE_DAYS, today=None):
+    """Behavioral evidence that a GitHub App is active on a personal account.
+
+    GitHub has no endpoint that lists the Apps installed on a personal account
+    for an ordinary user token, so when check_app_installed() returns None for
+    a User account, the next-best signal is the App's own footprint: issues and
+    PRs authored by `app/<slug>` (renovate[bot] PRs, onboarding PRs, the
+    Dependency Dashboard issue) active within the last `days` days in
+    repositories `owner` owns. When `repo` (OWNER/REPO) is given and there is
+    account-level activity, that repository is searched too, to tell "installed
+    and covering this repo" apart from "installed, but this repo may be outside
+    its repository selection".
+
+    Never raises. Returns a dict: count/latest for the account (count None
+    when the search failed), and repo/repo_count/repo_latest for the repo
+    (repo_count None when not searched or the search failed).
+    """
+    today = today or datetime.now(timezone.utc).date()
+    since = (today - timedelta(days=days)).isoformat()
+    evidence = {"days": days, "count": None, "latest": None,
+                "repo": repo, "repo_count": None, "repo_latest": None}
+    found = _search_app_activity(api, f"user:{owner} author:app/{app_slug} updated:>={since}")
+    if found is None:
+        return evidence
+    evidence["count"], evidence["latest"] = found
+    if repo and evidence["count"]:
+        found = _search_app_activity(api, f"repo:{repo} author:app/{app_slug} updated:>={since}")
+        if found is not None:
+            evidence["repo_count"], evidence["repo_latest"] = found
+    return evidence
+
+
+def app_status(api, owner, repo=None, app_slug=RENOVATE_APP_SLUG):
+    """The App status line, with activity evidence for personal accounts.
+
+    Organizations keep the authoritative installations-endpoint answer
+    unchanged; evidence is only gathered for a User account whose
+    installations could not be read.
+    """
+    installed, account_type = _check_app_installed(api, owner, app_slug)
+    evidence = None
+    if installed is None and account_type == "User":
+        evidence = app_activity_evidence(api, owner, repo, app_slug)
+    return app_status_line(installed, app_slug, evidence=evidence, owner=owner)
+
+
+def _activity(count, bot):
+    return f"{count} {bot} issue/PR" if count == 1 else f"{count} {bot} issues/PRs"
+
+
+def app_status_line(installed, app_slug=RENOVATE_APP_SLUG, install_url=RENOVATE_INSTALL_URL,
+                    evidence=None, owner=None):
     name = app_slug.capitalize()
     if installed is True:
         return f"{name} GitHub App: installed."
@@ -210,9 +291,36 @@ def app_status_line(installed, app_slug=RENOVATE_APP_SLUG, install_url=RENOVATE_
         return (f"{name} GitHub App: NOT installed — policy published, but no PRs will be "
                 f"raised until it is. Install: {install_url} (requires an organization "
                 "owner/admin, who may not be the person running this command).")
-    return (f"{name} GitHub App: UNKNOWN — could not verify installation from here "
-            f"(insufficient permissions, or a personal account other than the caller's own). "
-            f"Install (if missing): {install_url}")
+    unknown = (f"{name} GitHub App: UNKNOWN — could not verify installation from here "
+               f"(insufficient permissions, or a personal account other than the caller's own). "
+               f"Install (if missing): {install_url}")
+    if evidence is None:
+        return unknown
+    bot = f"{app_slug}[bot]"
+    account = f"{owner}'s repositories" if owner else "this account's repositories"
+    days = evidence.get("days", APP_EVIDENCE_DAYS)
+    if not evidence.get("count"):
+        # Absence of activity never proves absence of the App: a fresh install,
+        # or one with onboarding turned off, has no footprint yet.
+        reason = ("the activity search failed too" if evidence.get("count") is None else
+                  f"no {bot} issues/PRs were active in {account} in the last {days} days "
+                  "either, which does not prove the App is absent")
+        return f"{unknown} — {reason}; check {USER_INSTALLATIONS_URL}"
+    line = (f"{name} GitHub App: installed (evidence: "
+            f"{_activity(evidence['count'], bot)} active in {account} in the last "
+            f"{days} days, most recent {evidence.get('latest') or 'unknown'}).")
+    repo = evidence.get("repo")
+    repo_count = evidence.get("repo_count")
+    if repo and repo_count:
+        return (f"{line} Coverage of {repo} confirmed: "
+                f"{_activity(repo_count, bot)} active there, most recent "
+                f"{evidence.get('repo_latest') or 'unknown'}.")
+    if repo and repo_count == 0:
+        return (f"{line} Coverage of {repo} itself is not verified: no {bot} activity there in "
+                f"that window, so it may be outside the App's repository selection; check "
+                f"{USER_INSTALLATIONS_URL}")
+    target = repo or "any specific repository"
+    return f"{line} Coverage of {target} itself is not verified; check {USER_INSTALLATIONS_URL}"
 
 
 def snapshot(api, target):
@@ -390,7 +498,7 @@ def show_plan(api, plan):
     # Config presence never proves the App that acts on it is installed —
     # report that separately so "policy published" and "policy published but
     # inert" cannot read the same in this output.
-    print(app_status_line(check_app_installed(api, plan["client"].split("/")[0])))
+    print(app_status(api, plan["client"].split("/")[0], plan["client"]))
 
 
 def apply_plan(api, plan):
@@ -506,13 +614,23 @@ def main():
                 raise PolicyError("Review the saved plan, then pass --yes to publish its changes")
             plan = json.loads(args.plan.read_text())
             print(apply_plan(api, plan))
-            print(app_status_line(check_app_installed(api, plan["client"].split("/")[0])))
+            client = repo_name(plan["client"])
+            print(app_status(api, client.split("/")[0], client))
         else:
-            owner = args.owner or client_repo(args.repo).split("/")[0]
+            if args.owner:
+                owner = args.owner
+                # --owner overrides --repo; a repo is only searched for
+                # coverage evidence when it belongs to that same owner.
+                repo = repo_name(args.repo) if args.repo else None
+                if repo and repo.split("/")[0] != owner.lower():
+                    repo = None
+            else:
+                repo = client_repo(args.repo)
+                owner = repo.split("/")[0]
             # Absence is a report, never an error: this call is purely
             # informational and must not make an otherwise-healthy plan/apply
             # run look like it failed.
-            print(app_status_line(check_app_installed(api, owner, args.app_slug), args.app_slug))
+            print(app_status(api, owner, repo, args.app_slug))
         return 0
     except (PolicyError, OSError, ValueError, KeyError, TypeError) as exc:
         print(f"repo-org-policy: {exc}", file=sys.stderr)

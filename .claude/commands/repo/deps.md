@@ -247,10 +247,18 @@ Reuse steps 2–3 below for ecosystem/ownership detection and label validation.
     requires an organization owner/admin — who may not be the person running
     this command. Continue the rest of this path anyway (config reconciliation
     below is still correct groundwork), but do not report overall success.
+  - **Installed (evidence: …)** — personal accounts only, where no ordinary
+    user token can list installed Apps: the check found recent
+    `renovate[bot]` issues/PRs in the owner's repositories. Treat it as
+    installed, but relay the coverage clause verbatim — `Coverage of
+    OWNER/REPO confirmed` (Renovate is active in this repo too) versus
+    `not verified` (the repo may be outside the App's repository selection;
+    the line names `https://github.com/settings/installations` to check).
   - **UNKNOWN** — this token cannot see the installations endpoint for that
-    account (non-admin org member, or a personal account other than the
-    caller's own). Report it as unresolved, not as either "installed" or "not
-    installed".
+    account (non-admin org member), or a personal account showed no recent
+    Renovate activity / the activity search failed (the line then also names
+    `https://github.com/settings/installations`). Report it as unresolved, not
+    as either "installed" or "not installed".
 - Update the existing active Renovate config (do not add a competing file) to
   extend the deployed `dependencies.renovatePreset`, usually
   `github>OWNER/.github:renovate-config`. Preserve intentional client exceptions

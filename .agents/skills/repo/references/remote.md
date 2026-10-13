@@ -240,6 +240,8 @@ REPO_REMOTE_SSH_CIDR=                     # optional: pin the SG's SSH-ingress C
 REPO_REMOTE_SSH_MIN_PREFIX=32             # narrowest IPv4 prefix accepted for SSH ingress (default 32 = one address;
                                            # set e.g. 24 to allow a known ISP block)
 REPO_REMOTE_ALLOW_WORLD_SSH=              # "1" opts in, loudly, to a CIDR wider than the minimum (0.0.0.0/0, ::/0)
+REPO_REMOTE_CALLER=                       # optional: caller id stamped into this host's SSH rule Description
+                                           # (default: short hostname); set it when hosts share a short hostname
 
 # --- transport (AWS only; see "AWS transport: direct SSH or SSM Session Manager" below) ---
 REPO_REMOTE_TRANSPORT=ssh                 # ssh (default: public IP + tcp/22 from your address) or
@@ -756,23 +758,48 @@ landed before it ever calls `run-instances`:
      to `0.0.0.0/0` with only a printed notice.)
 4. **Authorize idempotently, and label the rule.** `authorize-security-group-ingress`
    for tcp/22 from the resolved CIDR, via `--ip-permissions` so the rule
-   carries a `Description` of `repo-remote:<repo-name>:<YYYY-MM-DD>`; a
-   duplicate rule on a reused group counts as success. That marker is what
+   carries a `Description` of `repo-remote:<repo-name>:<caller>:<YYYY-MM-DD>`;
+   a duplicate rule on a reused group counts as success. That marker is what
    makes each rule traceable to its owner in an audit — and what step 4a keys
    on.
 
-   4a. **Replace, don't accumulate.** Before authorizing the current address,
-   any tcp/22 rule on the group whose `Description` carries this tooling's
-   `repo-remote:<repo-name>:` marker — i.e. one *this* tooling wrote on an
+   `<caller>` identifies the host/operator running `up`. It is
+   `REPO_REMOTE_CALLER` if set, otherwise the short hostname (`hostname -s`),
+   sanitised to `[A-Za-z0-9_.-]` (any other character, including `:`, becomes
+   `-`) and capped at 40 characters. Set `REPO_REMOTE_CALLER` explicitly when
+   two machines that `up` the same repo's box share a short hostname (e.g. two
+   laptops both named `macbook`), or when the hostname is not stable across
+   sessions — otherwise they share one marker and step 4a on one would revoke
+   the other's rule. Conversely, give one operator the *same* value on every
+   machine only if you want each `up` to reclaim the others' rules.
+
+   4a. **Replace, don't accumulate — but only your own rules.** Before
+   authorizing the current address, any tcp/22 rule on the group whose
+   `Description` starts with **this caller's** marker,
+   `repo-remote:<repo-name>:<caller>:` — i.e. one *this host* wrote on an
    earlier run — is revoked. Without this, every `up` from a new address added
    a `/32` and removed none, so a few weeks of roaming left a group admitting
    every address the operator had ever had. A rule for the address being
-   authorized now is kept (a repeat run from the same place does not flap it),
-   and **rules without that marker are never touched** — an operator-added or
-   pre-existing rule is not this tooling's to revoke. A revoke that fails
-   (e.g. credentials without `RevokeSecurityGroupIngress`) is a loud notice
-   with the manual command, not a failed `up`: it leaves a stale-but-narrow
-   rule behind, never a wider one.
+   authorized now is kept (a repeat run from the same place does not flap it).
+   Everything else is left in place:
+   - **Other callers' rules** (`repo-remote:<repo-name>:<other-caller>:…`) are
+     never touched, so a second host's `up` on a shared box cannot revoke the
+     first host's rule and lock it out (rjwalters/loom#11616).
+   - **Legacy-format rules** written before the per-caller marker
+     (`repo-remote:<repo-name>:<YYYY-MM-DD>`, no caller segment) are **no longer
+     revoked automatically** — their owner is unknown. `up` instead prints a
+     `NOTICE: legacy-format SSH ingress rule(s) on <sg> (tcp/22 from: …)` line
+     with the manual `aws ec2 revoke-security-group-ingress` command; revoke
+     them by hand if stale. The match is exact (the text after
+     `repo-remote:<repo-name>:` must be a bare 10-character date), so a
+     per-caller rule whose caller id happens to start with `20` (e.g. hostname
+     `2024-mbp`) is never reported as legacy.
+   - **Rules without any `repo-remote:` marker** are never touched — an
+     operator-added or pre-existing rule is not this tooling's to revoke.
+
+   A revoke that fails (e.g. credentials without
+   `RevokeSecurityGroupIngress`) is a loud notice with the manual command, not
+   a failed `up`: it leaves a stale-but-narrow rule behind, never a wider one.
 5. **Verify before spending money.** `describe-security-groups` on the
    resolved group must show a tcp/22 rule, or the run fails loudly (exit `4`)
    before `run-instances` is ever called — this is what would have caught the
