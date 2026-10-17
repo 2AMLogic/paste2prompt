@@ -258,6 +258,8 @@ it doesn't toggle the sheet. The sheet shows ⌘ on macOS and Ctrl elsewhere.
   instruction text).
 - Sending anything straight to an LLM API.
 - Browser extensions or a desktop build.
+- An embeddable overlay for host web apps, with element picking: proposed
+  separately in [`EMBED.md`](EMBED.md).
 - **Reopening exports (optional follow-up, later than v1).** A later
   version may embed the edit list as JSON in a PNG `iTXt` chunk so that
   paste2prompt can read it back. Only Download keeps that chunk reliably:
