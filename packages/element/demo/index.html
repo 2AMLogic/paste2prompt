@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>paste2prompt overlay demo</title>
+    <!-- `npm run build -w @paste2prompt/element && npm run demo -w
+         @paste2prompt/element`, then serve the repo root
+         (python3 -m http.server) and open /packages/element/demo/. -->
+    <link rel="stylesheet" href="demo.css" />
+  </head>
+  <body>
+    <nav>
+      <strong>Fleet dashboard</strong>
+      <a href="#">Runs</a><a href="#">Repos</a><a href="#">Agents</a>
+      <input type="search" placeholder="Search runs" aria-label="Search runs" />
+    </nav>
+    <main>
+      <section class="cards">
+        <article><h2>Open PRs</h2><p class="big">14</p></article>
+        <article><h2>Failing checks</h2><p class="big warn">3</p></article>
+        <article><h2>Agents busy</h2><p class="big">5 / 8</p></article>
+      </section>
+      <table>
+        <thead><tr><th>Run</th><th>Repo</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          <tr><td>#4412</td><td>paste2prompt</td><td>passed</td><td><button class="save">Retry</button></td></tr>
+          <tr><td>#4411</td><td>loom</td><td>failed</td><td><button>Retry</button></td></tr>
+          <tr><td>#4410</td><td>2am</td><td>passed</td><td><button>Retry</button></td></tr>
+        </tbody>
+      </table>
+      <div class="spacer">Scroll filler</div>
+    </main>
+    <paste2prompt-overlay></paste2prompt-overlay>
+    <script type="module">
+      import { defineOverlay } from "../dist/demo.js";
+      defineOverlay();
+    </script>
+  </body>
+</html>
