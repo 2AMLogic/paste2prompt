@@ -1104,6 +1104,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "paste2prompt-embed"
+version = "0.0.0"
+dependencies = [
+ "paste2prompt-web",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "paste2prompt-web"
 version = "0.0.0"
 dependencies = [

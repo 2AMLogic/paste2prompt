@@ -35,27 +35,17 @@ const PAGE_BOTTOM: f64 = 16.0;
 /// height (`arrange` decides where that height is spent). `None` while the
 /// workspace isn't laid out (hidden).
 pub fn measure_space(workspace: &Element, instructions: Option<&Element>) -> Option<Space> {
-    let window = window();
     let ws = workspace.get_bounding_client_rect();
     if ws.width() < 1.0 {
         return None;
     }
-    let viewport_h = document().document_element().map_or_else(
-        || {
-            window
-                .inner_height()
-                .ok()
-                .and_then(|h| h.as_f64())
-                .unwrap_or(0.0)
-        },
-        |e| f64::from(e.client_height()),
-    );
+    let viewport = crate::dom::viewport();
     // Page coordinates, so the result doesn't depend on the scroll position.
-    let top = ws.top() + window.scroll_y().unwrap_or(0.0);
+    let top = ws.top() - viewport.top + viewport.scroll;
     let instructions_h = instructions.map_or(0.0, |e| e.get_bounding_client_rect().height());
     Some(Space {
         width: ws.width().floor(),
-        height: (viewport_h - top - PAGE_BOTTOM).floor(),
+        height: (viewport.height - top - PAGE_BOTTOM).floor(),
         instructions_h: instructions_h.ceil(),
     })
 }

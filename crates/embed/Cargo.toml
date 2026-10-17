@@ -1,0 +1,19 @@
+[package]
+name = "paste2prompt-embed"
+description = "wasm-bindgen entry points for embedding paste2prompt in a host page (packages/element)."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+paste2prompt-web = { path = "../web" }
+wasm-bindgen.workspace = true
+
+[dependencies.web-sys]
+workspace = true
+features = ["Blob", "HtmlElement", "ShadowRoot"]
