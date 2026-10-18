@@ -1,12 +1,13 @@
-//! **Open issue** (embed only): the new-issue URL for the host's GitHub
-//! repository, pre-filled from the caption. Pure, so `cargo test` covers it.
+//! **Open issue**: the new-issue URL for the host's GitHub repository,
+//! pre-filled from the caption. Pure, so `cargo test` covers it.
 //!
-//! The PNG can't travel in a URL, so the action copies it to the clipboard
-//! and the body asks the user to paste it. Nothing is sent by the app: the
-//! user submits the issue on github.com themselves (CLAUDE.md rule 1).
+//! The PNG can't travel in a URL, so `packages/element` copies it to the
+//! clipboard and the body asks the user to paste it. Opening this URL sends
+//! the title, labels, page address and caption text to github.com; that is
+//! the embed's one exception to CLAUDE.md rule 1, and it lives here, not in
+//! `crates/web`, so the standalone site never contains it.
 
-/// Where Open issue files, and what it adds to the body. Set by the embed's
-/// host.
+/// Where Open issue files, and what it adds to the body. Set by the host.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IssueTarget {
     /// `owner/name`.

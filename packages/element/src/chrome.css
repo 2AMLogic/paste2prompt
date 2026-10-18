@@ -94,6 +94,19 @@
   font: 0.875rem system-ui, sans-serif;
 }
 
+.bar-notice {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.bar-notice a {
+  color: var(--p2p-accent);
+}
+
+.bar .issue {
+  font-weight: 600;
+}
+
 .bar .title {
   flex: 1 1 auto;
   min-width: 0;

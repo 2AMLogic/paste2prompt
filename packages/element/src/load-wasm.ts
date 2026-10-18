@@ -4,10 +4,16 @@
 /** A mounted editor (crates/embed `Editor`). */
 export interface Editor {
   hasEdits(): boolean;
+  /** The caption as plain text, or "" without an image. */
+  caption(): string;
+  /** The export PNG. Call in the click handler, for `ClipboardItem`. */
+  renderPng(): Promise<Blob>;
+  /** The pre-filled new-issue URL. Throws without an image. */
+  issueUrl(issue: IssueOptions): string;
   close(): void;
 }
 
-/** Adds an **Open issue** button to the editor (crates/embed `open`). */
+/** Where **Open issue** files, and what goes in the body. */
 export interface IssueOptions {
   /** `owner/name`. */
   repo: string;
@@ -20,13 +26,7 @@ export interface IssueOptions {
 
 interface EmbedModule {
   default(): Promise<unknown>;
-  open(
-    shadow: ShadowRoot,
-    container: HTMLElement,
-    image: Blob,
-    name?: string,
-    issue?: IssueOptions,
-  ): Editor;
+  open(shadow: ShadowRoot, container: HTMLElement, image: Blob, name?: string): Editor;
 }
 
 let loading: Promise<EmbedModule> | undefined;

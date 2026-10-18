@@ -40,12 +40,7 @@
 //!   later) accept the same shape.
 //! - When the clipboard can't take an image (no `ClipboardItem`, insecure
 //!   context, permission denied), the toast says why and offers Download.
-//! - **Open issue** (embed only, [`issue`]) copies the image first and opens
-//!   the new-issue tab once the copy has worked: a tab opened first would
-//!   take the focus, and the clipboard refuses a page without it. A browser
-//!   that blocks the late `window.open` gets a link in the toast instead.
 
-pub mod issue;
 pub mod rules;
 
 use std::cell::RefCell;
@@ -60,7 +55,6 @@ use web_sys::{Blob, BlobPropertyBag, Clipboard, ClipboardItem, HtmlAnchorElement
 
 use crate::image::{ImageStore, LoadedImage};
 use crate::keymap::{self, rules::Action as KeyAction};
-use issue::IssueTarget;
 use rules::{Action, CopyFailure, Timestamp};
 
 const PNG: &str = "image/png";
@@ -90,9 +84,6 @@ struct Toast {
     message: String,
     /// Show a **Download PNG** button (Copy image failed).
     offer_download: bool,
-    /// A link to show, as `(label, href)`: the new issue, when its tab
-    /// couldn't be opened.
-    link: Option<(&'static str, String)>,
     /// Bumped per toast, so an old auto-dismiss timer can't close a new one.
     serial: u64,
 }
@@ -126,7 +117,7 @@ impl Exporter {
     /// or a key press): the clipboard requires it.
     pub fn run(&self, action: Action) {
         match action {
-            Action::CopyImage => self.copy_image(None),
+            Action::CopyImage => self.copy_image(),
             Action::Download => self.download(),
             Action::CopyCaption => self.copy_caption(),
         }
@@ -149,20 +140,9 @@ impl Exporter {
         Some((image, doc))
     }
 
-    /// Open issue: copy the image, then open `target`'s new-issue page
-    /// pre-filled from the caption (see module docs).
-    pub fn open_issue(&self, target: &IssueTarget) {
-        let Some((_, Ok(doc))) = self.inputs() else {
-            return self.copy_image(None);
-        };
-        let caption = Caption::from_document(&doc).to_plain_text();
-        self.copy_image(Some(issue::issue_url(target, doc.instructions(), &caption)));
-    }
-
     /// Copy image: `clipboard.write` with a `ClipboardItem` whose value is a
     /// promise of the rendered PNG, all within this call (see module docs).
-    /// With `issue`, opens that URL in a new tab once the copy is done.
-    fn copy_image(&self, issue: Option<String>) {
+    fn copy_image(&self) {
         if self.busy.get_untracked() {
             return;
         }
@@ -171,7 +151,7 @@ impl Exporter {
         };
         let clipboard = match image_clipboard() {
             Ok(c) => c,
-            Err(failure) => return self.copy_failed(failure, issue),
+            Err(failure) => return self.copy_failed(failure),
         };
         let render_error: Rc<RefCell<Option<String>>> = Rc::default();
         let blob = {
@@ -192,7 +172,7 @@ impl Exporter {
             .and_then(|_| ClipboardItem::new_with_record_from_str_to_blob_promise(&record));
         let item = match item {
             Ok(item) => item,
-            Err(_) => return self.copy_failed(CopyFailure::Unsupported, issue),
+            Err(_) => return self.copy_failed(CopyFailure::Unsupported),
         };
         let write = clipboard.write(&Array::of1(&item));
         let this = *self;
@@ -201,22 +181,11 @@ impl Exporter {
             // `write` settles after the blob promise, so the render error (if
             // any) is already recorded.
             let render_error = render_error.borrow_mut().take();
-            match (result, render_error, issue) {
-                (Ok(_), _, None) => this.show("Image copied. Paste it into your chat.", false),
-                (Ok(_), _, Some(url)) => {
-                    if open_tab(&url) {
-                        this.show("Image copied. Paste it into the new issue.", false);
-                    } else {
-                        this.show_link(
-                            "Image copied. Open the new issue and paste it there.",
-                            false,
-                            url,
-                        );
-                    }
-                }
-                (Err(_), Some(message), _) => this.show(message, false),
-                (Err(e), None, issue) => {
-                    this.copy_failed(CopyFailure::from_exception_name(&exception_name(&e)), issue)
+            match (result, render_error) {
+                (Ok(_), _) => this.show("Image copied. Paste it into your chat.", false),
+                (Err(_), Some(message)) => this.show(message, false),
+                (Err(e), None) => {
+                    this.copy_failed(CopyFailure::from_exception_name(&exception_name(&e)))
                 }
             }
         });
@@ -296,44 +265,26 @@ impl Exporter {
         result
     }
 
-    /// With `issue`, the toast also links the new issue, so the user can
-    /// attach the downloaded PNG there.
-    fn copy_failed(&self, failure: CopyFailure, issue: Option<String>) {
-        let message = format!("{} Download the PNG instead?", failure.message());
-        match issue {
-            Some(url) => self.show_link(message, true, url),
-            None => self.show(message, true),
-        }
-    }
-
-    fn show(&self, message: impl Into<String>, offer_download: bool) {
-        self.toast_with(message.into(), offer_download, None);
-    }
-
-    fn show_link(&self, message: impl Into<String>, offer_download: bool, issue_url: String) {
-        self.toast_with(
-            message.into(),
-            offer_download,
-            Some(("Open the new issue", issue_url)),
+    fn copy_failed(&self, failure: CopyFailure) {
+        self.show(
+            format!("{} Download the PNG instead?", failure.message()),
+            true,
         );
     }
 
-    fn toast_with(
-        &self,
-        message: String,
-        offer_download: bool,
-        link: Option<(&'static str, String)>,
-    ) {
+    fn show(&self, message: impl Into<String>, offer_download: bool) {
         let serial = self.toast_serial.with_value(|s| s + 1);
         self.toast_serial.set_value(serial);
-        let lingers = offer_download || link.is_some();
         self.toast.set(Some(Toast {
-            message,
+            message: message.into(),
             offer_download,
-            link,
             serial,
         }));
-        let ms = if lingers { TOAST_OFFER_MS } else { TOAST_MS };
+        let ms = if offer_download {
+            TOAST_OFFER_MS
+        } else {
+            TOAST_MS
+        };
         let toast = self.toast;
         spawn_local(async move {
             sleep(ms).await;
@@ -349,6 +300,32 @@ impl Exporter {
         self.toast.set(None);
     }
 
+    /// For the embed: the caption as plain text and the image-level
+    /// instructions, or `None` without an image.
+    pub fn caption(&self) -> Option<(String, String)> {
+        let (_, doc) = self.inputs()?;
+        let doc = doc.ok()?;
+        let text = Caption::from_document(&doc).to_plain_text();
+        Some((text, doc.instructions().to_owned()))
+    }
+
+    /// For the embed: a promise of the export PNG blob, rendered as Copy
+    /// image renders it (busy state included). Rejects with a message.
+    pub fn png_promise(&self) -> Promise {
+        let inputs = (!self.busy.get_untracked())
+            .then(|| self.inputs())
+            .flatten();
+        let this = *self;
+        future_to_promise(async move {
+            let (image, doc) =
+                inputs.ok_or_else(|| JsValue::from_str("Nothing to export right now."))?;
+            match this.render(image, doc).await {
+                Ok(blob) => Ok(blob.into()),
+                Err(message) => Err(JsValue::from_str(&message)),
+            }
+        })
+    }
+
     /// `true` when an image is loaded (not tracked).
     pub fn has_image(&self) -> bool {
         self.store.current().with_untracked(Option::is_some)
@@ -361,26 +338,8 @@ impl Exporter {
 pub fn ExportToolbar(exporter: Exporter) -> impl IntoView {
     let disabled = move || !exporter.ready();
     let toast = exporter.toast;
-    // Embed only: the host's repository for Open issue.
-    let issue = use_context::<IssueTarget>().map(|target| {
-        let title = format!("Copy the image and open a new issue in {}", target.repo);
-        view! {
-            <button
-                type="button"
-                class="primary"
-                aria-label="Open issue"
-                title=title
-                disabled=disabled
-                on:click=move |_| exporter.open_issue(&target)
-            >
-                <span class="label-full">"Open issue"</span>
-                <span class="label-short">"Issue"</span>
-            </button>
-        }
-    });
     view! {
         <div class="export-toolbar" role="group" aria-label="Export" aria-busy=move || exporter.busy.get().to_string()>
-            {issue}
             <button
                 type="button"
                 aria-label="Copy image"
@@ -424,9 +383,6 @@ pub fn ExportToolbar(exporter: Exporter) -> impl IntoView {
             {move || toast.get().map(|t| view! {
                 <div class="toast">
                     <span>{t.message}</span>
-                    {t.link.map(|(label, href)| view! {
-                        <a href=href target="_blank" rel="noopener noreferrer">{label}</a>
-                    })}
                     <Show when=move || t.offer_download>
                         <button type="button" class="primary" on:click=move |_| {
                             exporter.dismiss();
@@ -493,18 +449,6 @@ fn save_blob(blob: &Blob, name: &str) -> Result<(), String> {
         let _ = web_sys::Url::revoke_object_url(&url);
     });
     appended.map(|_| ())
-}
-
-/// Opens `url` in a new tab, without giving it a handle back to this page.
-/// `false` when the browser blocked it.
-fn open_tab(url: &str) -> bool {
-    // Opened blank, then sent on: `noopener` in the features would make
-    // `open` return null, hiding whether it was blocked.
-    let Ok(Some(tab)) = window().open_with_url_and_target("", "_blank") else {
-        return false;
-    };
-    let _ = Reflect::set(&tab, &"opener".into(), &JsValue::NULL);
-    tab.location().set_href(url).is_ok()
 }
 
 /// The async clipboard, when the page has one (secure contexts only).

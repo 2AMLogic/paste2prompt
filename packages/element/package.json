@@ -18,7 +18,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build:wasm": "wasm-pack build ../../crates/embed --target web --release --no-pack --out-dir ../../packages/element/dist/wasm",
+    "build:wasm": "node build-wasm.mjs",
     "build": "npm run build:wasm && node build.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "demo": "node build.mjs --demo && echo \"Serve the repo root (python3 -m http.server) and open /packages/element/demo/\""
