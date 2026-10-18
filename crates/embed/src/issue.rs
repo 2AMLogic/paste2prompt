@@ -124,8 +124,8 @@ mod tests {
 
     fn target() -> IssueTarget {
         IssueTarget {
-            repo: "2AMLogic/loom-ui".to_owned(),
-            labels: vec!["loom:triage".to_owned()],
+            repo: "your-org/your-app".to_owned(),
+            labels: vec!["bug".to_owned()],
             context: "Build: 1.2.3".to_owned(),
             page: "https://dashboard.2amlogic.com/#/runs".to_owned(),
         }
@@ -159,9 +159,9 @@ mod tests {
     #[test]
     fn url_carries_title_body_and_labels() {
         let url = issue_url(&target(), "ETA column is wrong\nmore detail", CAPTION);
-        assert!(url.starts_with("https://github.com/2AMLogic/loom-ui/issues/new?title="));
+        assert!(url.starts_with("https://github.com/your-org/your-app/issues/new?title="));
         assert_eq!(param(&url, "title").unwrap(), "ETA column is wrong");
-        assert_eq!(param(&url, "labels").unwrap(), "loom:triage");
+        assert_eq!(param(&url, "labels").unwrap(), "bug");
         let body = param(&url, "body").unwrap();
         assert!(body.starts_with(PASTE_HERE));
         assert!(body.contains("**Page:** https://dashboard.2amlogic.com/#/runs\nBuild: 1.2.3\n"));

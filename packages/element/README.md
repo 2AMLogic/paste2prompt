@@ -54,7 +54,8 @@ npm install @2amlogic/paste2prompt-element
 ## Open issue
 
 With `issue-repo="owner/name"`, the panel's top bar gets an **Open issue in
-owner/name** button. It copies the annotated PNG to the clipboard, then opens
+owner/name** button. There is no default repository: each app that installs
+the overlay names its own, and without `issue-repo` the button isn't shown. It copies the annotated PNG to the clipboard, then opens
 the repository's new-issue page with these filled in:
 - a title from the first line of the image-level instructions;
 - `issue-labels`, which GitHub applies only if the user may label issues;
@@ -69,7 +70,7 @@ often carries tokens, but keeps the hash, where hash-routed apps keep their
 route. If the browser blocks the new tab, the bar shows a link to it instead.
 
 ```html
-<paste2prompt-overlay issue-repo="2AMLogic/loom-ui" issue-labels="loom:triage"></paste2prompt-overlay>
+<paste2prompt-overlay issue-repo="your-org/your-app" issue-labels="bug"></paste2prompt-overlay>
 <script type="module">
   document.querySelector("paste2prompt-overlay").issueContext = `**Build:** ${BUILD}`;
 </script>
