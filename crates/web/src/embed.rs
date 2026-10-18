@@ -9,17 +9,19 @@ use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
 
+use js_sys::Promise;
 use leptos::prelude::*;
 use web_sys::{Blob, HtmlElement, ShadowRoot};
 
 use crate::App;
 use crate::dom::{self, EmbedRoot};
-pub use crate::export::issue::IssueTarget;
+use crate::export::Exporter;
 
 /// A mounted embed. Dropping it unmounts the app.
 pub struct Embedded {
     handle: Option<Box<dyn Any>>,
     edits: Rc<Cell<bool>>,
+    exporter: Rc<Cell<Option<Exporter>>>,
 }
 
 impl Embedded {
@@ -27,11 +29,25 @@ impl Embedded {
     pub fn has_edits(&self) -> bool {
         self.edits.get()
     }
+
+    /// The caption as plain text and the image-level instructions, as
+    /// **Copy caption** would copy them; `None` without an image.
+    pub fn caption(&self) -> Option<(String, String)> {
+        self.exporter.get()?.caption()
+    }
+
+    /// A promise of the export PNG blob, as **Copy image** renders it.
+    /// Rejects with a message (no image, too large, …).
+    pub fn render_png(&self) -> Promise {
+        match self.exporter.get() {
+            Some(exporter) => exporter.png_promise(),
+            None => Promise::reject(&"The editor isn't ready.".into()),
+        }
+    }
 }
 
 /// Mounts the app into `container`, which must be inside `shadow` and is
-/// the element the app scrolls in, with `image` loaded. With `issue`, the
-/// export toolbar gains **Open issue** for that repository.
+/// the element the app scrolls in, with `image` loaded.
 ///
 /// One embed at a time: drop the previous one first.
 pub fn mount(
@@ -39,7 +55,6 @@ pub fn mount(
     container: HtmlElement,
     image: Blob,
     name: Option<String>,
-    issue: Option<IssueTarget>,
 ) -> Embedded {
     console_error_panic_hook::set_once();
     dom::set_embed_root(Some(EmbedRoot {
@@ -49,13 +64,15 @@ pub fn mount(
     let initial = (image, name);
     let edits = Rc::new(Cell::new(false));
     let report = Rc::clone(&edits);
-    let handle = leptos::mount::mount_to(container, move || match issue {
-        Some(issue) => view! { <App initial edits=report issue /> }.into_any(),
-        None => view! { <App initial edits=report /> }.into_any(),
+    let exporter = Rc::new(Cell::new(None));
+    let give = Rc::clone(&exporter);
+    let handle = leptos::mount::mount_to(container, move || {
+        view! { <App initial edits=report exporter=give /> }
     });
     Embedded {
         handle: Some(Box::new(handle)),
         edits,
+        exporter,
     }
 }
 
