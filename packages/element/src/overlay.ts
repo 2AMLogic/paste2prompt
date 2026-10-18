@@ -1,7 +1,7 @@
 import appCss from "../../../crates/web/style.css";
 import chromeCss from "./chrome.css";
 import { captureViewport } from "./capture.js";
-import { type Editor, loadEditor } from "./load-wasm.js";
+import { type Editor, type IssueOptions, loadEditor } from "./load-wasm.js";
 
 /** Where the launcher button floats. */
 export type LauncherPosition = "bottom-right" | "bottom-left" | "top-right" | "top-left";
@@ -36,12 +36,21 @@ function styles(): CSSStyleSheet {
  * Attributes:
  * - `position`: where the launcher floats (`bottom-right` by default).
  * - `no-launcher`: hide the launcher; open with {@link open} instead.
+ * - `issue-repo`: `owner/name` of a GitHub repository. The editor then has
+ *   an **Open issue** button: it copies the annotated PNG and opens that
+ *   repository's new-issue page, pre-filled with the page address and the
+ *   caption, for the user to paste the image into and submit.
+ * - `issue-labels`: comma-separated labels for that issue.
+ *
+ * The {@link issueContext} property adds lines to the issue body (a build
+ * version, say).
  *
  * Events (on the element): `paste2prompt-open` once the editor shows,
  * `paste2prompt-close` once it is gone.
  *
  * Nothing leaves the browser: the capture goes straight into the editor,
- * and the editor's output goes to the clipboard or a download.
+ * and the editor's output goes to the clipboard or a download. Open issue
+ * only opens a github.com page; the user submits it.
  */
 export class Paste2PromptOverlay extends Base {
   #shadow: ShadowRoot;
@@ -51,6 +60,11 @@ export class Paste2PromptOverlay extends Base {
   #page: HTMLElement;
   #editor: Editor | undefined;
   #busy = false;
+  /** Bumped by every open and close, so a superseded open stops. */
+  #attempt = 0;
+
+  /** Extra lines for the body of an issue opened from the editor. */
+  issueContext = "";
 
   constructor() {
     super();
@@ -63,7 +77,7 @@ export class Paste2PromptOverlay extends Base {
       <div class="panel" part="panel" role="dialog" aria-modal="true"
         aria-label="paste2prompt" hidden>
         <div class="bar">
-          <span class="title" role="status"></span>
+          <span class="title"></span>
           <button type="button" class="close">Close</button>
         </div>
         <div class="p2p-page"></div>
@@ -88,36 +102,91 @@ export class Paste2PromptOverlay extends Base {
    */
   async open(): Promise<void> {
     if (this.#editor || this.#busy) return;
+    const attempt = ++this.#attempt;
+    const stale = () => attempt !== this.#attempt;
     this.#busy = true;
     this.#launcher.setAttribute("aria-busy", "true");
     try {
       // Start loading the editor while the page is captured.
       const editor = loadEditor();
+      // Handled below; this only stops an unhandled rejection when the
+      // capture fails first.
+      editor.catch(() => {});
+      // The page address without the query string, which often carries
+      // tokens; the hash stays, since hash-routed apps keep the route there.
+      const page = `${location.origin}${location.pathname}${location.hash}`;
+      this.#title.textContent = `Annotating ${location.host}${location.pathname}${location.hash}`;
+      // The panel is part of this element, which the capture leaves out.
+      this.#status("Capturing the page…");
+      this.#panel.hidden = false;
       let image: Blob;
       try {
         image = await captureViewport(this);
+        if (stale()) return;
       } catch (err) {
+        if (stale()) return;
         console.error("paste2prompt: page capture failed", err);
+        this.#failed("Couldn't capture the page. See the console for details.");
         return;
       }
-      this.#title.textContent = `Annotating ${location.host}${location.pathname}`;
-      this.#title.classList.remove("error");
-      this.#panel.hidden = false;
+      this.#status("Loading the editor…");
       let mod;
       try {
         mod = await editor;
+        if (stale()) return;
       } catch (err) {
+        if (stale()) return;
         console.error("paste2prompt: the editor failed to load", err);
-        this.#title.textContent = "The editor failed to load. See the console for details.";
-        this.#title.classList.add("error");
+        this.#failed("The editor failed to load. See the console for details.");
         return;
       }
-      this.#editor = mod.open(this.#shadow, this.#page, image, "Page capture");
+      this.#page.replaceChildren();
+      this.#editor = mod.open(this.#shadow, this.#page, image, "Page capture", this.#issue(page));
       this.dispatchEvent(new CustomEvent("paste2prompt-open"));
     } finally {
-      this.#busy = false;
-      this.#launcher.removeAttribute("aria-busy");
+      if (!stale()) this.#idle();
     }
+  }
+
+  #idle(): void {
+    this.#busy = false;
+    this.#launcher.removeAttribute("aria-busy");
+  }
+
+  /** The Open issue settings from the attributes, if `issue-repo` is set. */
+  #issue(page: string): IssueOptions | undefined {
+    const repo = this.getAttribute("issue-repo")?.trim();
+    if (!repo) return undefined;
+    const labels = (this.getAttribute("issue-labels") ?? "")
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return { repo, labels, context: this.issueContext, page };
+  }
+
+  /** Shows progress where the editor will be, in visible text. */
+  #status(message: string): void {
+    const p = document.createElement("p");
+    p.className = "p2p-status";
+    p.setAttribute("role", "status");
+    p.textContent = message;
+    this.#page.replaceChildren(p);
+  }
+
+  /** Shows why opening failed, with a retry. */
+  #failed(message: string): void {
+    const p = document.createElement("p");
+    p.className = "p2p-status error";
+    p.setAttribute("role", "alert");
+    p.textContent = message;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Try again";
+    retry.addEventListener("click", () => {
+      this.#panel.hidden = true;
+      void this.open();
+    });
+    this.#page.replaceChildren(p, retry);
   }
 
   /**
@@ -127,6 +196,9 @@ export class Paste2PromptOverlay extends Base {
   close(force = false): void {
     const editor = this.#editor;
     if (editor && !force && editor.hasEdits() && !window.confirm(DISCARD_PROMPT)) return;
+    // Also stops an open still capturing or loading.
+    this.#attempt++;
+    this.#idle();
     this.#editor = undefined;
     editor?.close();
     this.#page.replaceChildren();

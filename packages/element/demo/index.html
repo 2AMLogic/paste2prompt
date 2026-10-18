@@ -31,10 +31,11 @@
       </table>
       <div class="spacer">Scroll filler</div>
     </main>
-    <paste2prompt-overlay></paste2prompt-overlay>
+    <paste2prompt-overlay issue-repo="2AMLogic/loom-ui" issue-labels="loom:triage"></paste2prompt-overlay>
     <script type="module">
       import { defineOverlay } from "../dist/demo.js";
       defineOverlay();
+      document.querySelector("paste2prompt-overlay").issueContext = "**Build:** demo";
     </script>
   </body>
 </html>

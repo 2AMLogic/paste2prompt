@@ -1107,6 +1107,7 @@ dependencies = [
 name = "paste2prompt-embed"
 version = "0.0.0"
 dependencies = [
+ "js-sys",
  "paste2prompt-web",
  "wasm-bindgen",
  "web-sys",

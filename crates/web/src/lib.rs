@@ -18,7 +18,7 @@ use paste2prompt_core::APP_NAME;
 use web_sys::Blob;
 
 use crate::canvas::{CanvasState, CanvasToolbar, CanvasView, SourceImage};
-use crate::export::{DocumentSource, ExportToolbar, Exporter};
+use crate::export::{DocumentSource, ExportToolbar, Exporter, issue::IssueTarget};
 use crate::history_panel::{HistoryPanel, InstructionsBox};
 use crate::image::ImageStore;
 use crate::input::{ImageInput, ImageInputLayer, OpenButton, StartOverButton};
@@ -35,13 +35,18 @@ pub fn run() {
 /// the history panel, plus the keyboard shortcuts and their `?` sheet.
 ///
 /// For the embed: `initial` is an image to load straight away (the page
-/// capture) and its name, and `edits` is kept up to date with whether there
-/// are edits, so the host can ask before closing.
+/// capture) and its name, `edits` is kept up to date with whether there
+/// are edits, so the host can ask before closing, and `issue` adds an
+/// **Open issue** export for the host's repository.
 #[component]
 fn App(
     #[prop(optional)] initial: Option<(Blob, Option<String>)>,
     #[prop(optional)] edits: Option<Rc<Cell<bool>>>,
+    #[prop(optional)] issue: Option<IssueTarget>,
 ) -> impl IntoView {
+    if let Some(issue) = issue {
+        provide_context(issue);
+    }
     let store = ImageStore::provide();
     let canvas = CanvasState::provide();
     Shortcuts::provide();

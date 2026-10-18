@@ -16,6 +16,17 @@ export interface Paste2PromptProps {
    * editor through the ref ({@link Paste2PromptHandle.open}).
    */
   launcher?: boolean;
+  /**
+   * A GitHub repository, `owner/name`. The editor then has an **Open
+   * issue** button: it copies the annotated PNG and opens the repository's
+   * new-issue page, pre-filled with the page address and the caption, for
+   * the user to paste the image into and submit.
+   */
+  issueRepo?: string;
+  /** Labels for that issue. */
+  issueLabels?: string[];
+  /** Extra lines for that issue's body, such as a build version. */
+  issueContext?: string;
   /** Called once the editor shows. */
   onOpen?: () => void;
   /** Called once the editor is gone. */
@@ -44,7 +55,10 @@ export interface Paste2PromptHandle {
  * download.
  */
 export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
-  function Paste2Prompt({ position, launcher = true, onOpen, onClose }, ref) {
+  function Paste2Prompt(
+    { position, launcher = true, issueRepo, issueLabels, issueContext, onOpen, onClose },
+    ref,
+  ) {
     const el = useRef<Paste2PromptOverlay>(null);
 
     useEffect(defineOverlay, []);
@@ -60,6 +74,10 @@ export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
       }),
       [],
     );
+
+    useEffect(() => {
+      if (el.current) el.current.issueContext = issueContext ?? "";
+    }, [issueContext]);
 
     useEffect(() => {
       const node = el.current;
@@ -80,6 +98,8 @@ export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
       ref: el,
       position,
       "no-launcher": launcher ? undefined : "",
+      "issue-repo": issueRepo,
+      "issue-labels": issueLabels?.join(","),
     });
   },
 );

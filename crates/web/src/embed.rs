@@ -14,6 +14,7 @@ use web_sys::{Blob, HtmlElement, ShadowRoot};
 
 use crate::App;
 use crate::dom::{self, EmbedRoot};
+pub use crate::export::issue::IssueTarget;
 
 /// A mounted embed. Dropping it unmounts the app.
 pub struct Embedded {
@@ -29,7 +30,8 @@ impl Embedded {
 }
 
 /// Mounts the app into `container`, which must be inside `shadow` and is
-/// the element the app scrolls in, with `image` loaded.
+/// the element the app scrolls in, with `image` loaded. With `issue`, the
+/// export toolbar gains **Open issue** for that repository.
 ///
 /// One embed at a time: drop the previous one first.
 pub fn mount(
@@ -37,6 +39,7 @@ pub fn mount(
     container: HtmlElement,
     image: Blob,
     name: Option<String>,
+    issue: Option<IssueTarget>,
 ) -> Embedded {
     console_error_panic_hook::set_once();
     dom::set_embed_root(Some(EmbedRoot {
@@ -46,7 +49,10 @@ pub fn mount(
     let initial = (image, name);
     let edits = Rc::new(Cell::new(false));
     let report = Rc::clone(&edits);
-    let handle = leptos::mount::mount_to(container, move || view! { <App initial edits=report /> });
+    let handle = leptos::mount::mount_to(container, move || match issue {
+        Some(issue) => view! { <App initial edits=report issue /> }.into_any(),
+        None => view! { <App initial edits=report /> }.into_any(),
+    });
     Embedded {
         handle: Some(Box::new(handle)),
         edits,

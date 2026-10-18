@@ -7,9 +7,26 @@ export interface Editor {
   close(): void;
 }
 
+/** Adds an **Open issue** button to the editor (crates/embed `open`). */
+export interface IssueOptions {
+  /** `owner/name`. */
+  repo: string;
+  labels?: string[];
+  /** Extra lines for the issue body. */
+  context?: string;
+  /** The captured page, for the body. */
+  page?: string;
+}
+
 interface EmbedModule {
   default(): Promise<unknown>;
-  open(shadow: ShadowRoot, container: HTMLElement, image: Blob, name?: string): Editor;
+  open(
+    shadow: ShadowRoot,
+    container: HTMLElement,
+    image: Blob,
+    name?: string,
+    issue?: IssueOptions,
+  ): Editor;
 }
 
 let loading: Promise<EmbedModule> | undefined;
