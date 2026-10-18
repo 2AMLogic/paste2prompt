@@ -121,7 +121,7 @@ jobs:
       - name: typecheck
         run: |
           npx --no-install tsc -p packages/element/tsconfig.json
-          npm run typecheck -w @paste2prompt/react
+          npm run typecheck -w @2amlogic/paste2prompt-react
       - name: bundle packages/element
         working-directory: packages/element
         run: node build.mjs --demo

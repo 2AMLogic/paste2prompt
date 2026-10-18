@@ -1,9 +1,16 @@
 {
-  "name": "@paste2prompt/element",
-  "version": "0.0.0",
+  "name": "@2amlogic/paste2prompt-element",
+  "version": "0.1.0",
   "description": "paste2prompt as an overlay for any web page: a launcher button, a page capture and the editor, in a web component.",
-  "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/2AMLogic/paste2prompt.git",
+    "directory": "packages/element"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,11 +21,12 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/demo.js"
   ],
   "sideEffects": false,
   "scripts": {
-    "build:wasm": "wasm-pack build ../../crates/embed --target web --release --no-pack --out-dir ../../packages/element/dist/wasm",
+    "build:wasm": "wasm-pack build ../../crates/embed --target web --release --no-pack --out-dir ../../packages/element/dist/wasm && node -e \"require('fs').rmSync('dist/wasm/.gitignore',{force:true})\"",
     "build": "npm run build:wasm && node build.mjs && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "demo": "node build.mjs --demo && echo \"Serve the repo root (python3 -m http.server) and open /packages/element/demo/\""

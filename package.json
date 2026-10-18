@@ -8,7 +8,7 @@
     "check:all": "echo 'No checks configured. Customize this script for your project.' && exit 0",
     "test": "echo 'No tests configured. Customize this script for your project.' && exit 0",
     "lint": "echo 'No linter configured. Customize this script for your project.' && exit 0",
-    "build:packages": "npm run build -w @paste2prompt/element -w @paste2prompt/react"
+    "build:packages": "npm run build -w @2amlogic/paste2prompt-element -w @2amlogic/paste2prompt-react"
   },
   "devDependencies": {
     "wrangler": "4.149.0"

@@ -1,9 +1,16 @@
 {
-  "name": "@paste2prompt/react",
-  "version": "0.0.0",
+  "name": "@2amlogic/paste2prompt-react",
+  "version": "0.1.0",
   "description": "React component for the paste2prompt overlay: a launcher button that captures the page and opens the editor over it.",
-  "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/2AMLogic/paste2prompt.git",
+    "directory": "packages/react"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -22,7 +29,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@paste2prompt/element": "0.0.0"
+    "@2amlogic/paste2prompt-element": "^0.1.0"
   },
   "peerDependencies": {
     "react": ">=18"

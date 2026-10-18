@@ -1,0 +1,152 @@
+name: Publish packages
+
+# Publish @2amlogic/paste2prompt-element and @2amlogic/paste2prompt-react
+# (packages/) to GitHub Packages when a change lands on main. A version the
+# registry already has is skipped, so only a merged version bump publishes.
+# Same shape as 2AMLogic/loom-ui's publish-loom-components.yml.
+#
+# The built-in token only: a package published by this repo's workflow is
+# linked to 2AMLogic/paste2prompt. Another repo's Actions (2AMLogic/loom-ui)
+# read it only after an operator grants it under the package's "Manage
+# Actions access"; github.com has no API for that.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/**"
+      - "crates/**"
+      - "Cargo.lock"
+      - "package-lock.json"
+      - ".github/workflows/publish-packages.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: publish-packages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_PACK_VERSION: v0.13.1
+  WASM_PACK_SHA256: c539d91ccab2591a7e975bcf82c82e1911b03335c80aa83d67ad25ed2ad06539
+
+jobs:
+  # npm ci runs dependency install scripts, so it runs here with a read-only
+  # token and no git credentials on disk. The publish job never runs it.
+  build:
+    name: Build the packages
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Installs the toolchain and wasm target pinned in rust-toolchain.toml.
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      # wasm-pack then downloads the wasm-bindgen CLI matching Cargo.lock,
+      # and wasm-opt.
+      - name: Install wasm-pack
+        run: |
+          name="wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
+          curl -sSfL -o wasm-pack.tar.gz \
+            "https://github.com/rustwasm/wasm-pack/releases/download/${WASM_PACK_VERSION}/${name}.tar.gz"
+          echo "${WASM_PACK_SHA256}  wasm-pack.tar.gz" | sha256sum -c -
+          tar xzf wasm-pack.tar.gz -C "$HOME/.cargo/bin" --strip-components=1 "${name}/wasm-pack"
+          rm wasm-pack.tar.gz
+          wasm-pack --version
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        run: npm run build:packages
+
+      - name: Pack the tarballs
+        run: |
+          mkdir -p "$RUNNER_TEMP/tarballs"
+          for p in packages/element packages/react; do
+            npm pack "./$p" --ignore-scripts --pack-destination "$RUNNER_TEMP/tarballs"
+          done
+
+      # The editor is useless without its wasm. wasm-pack writes a .gitignore
+      # of "*" next to it, which npm honours; the build script deletes it.
+      - name: Check the element tarball carries the editor
+        run: |
+          listing="$(tar -tzf "$RUNNER_TEMP"/tarballs/2amlogic-paste2prompt-element-*.tgz)"
+          for f in dist/index.js dist/wasm/paste2prompt_embed.js dist/wasm/paste2prompt_embed_bg.wasm; do
+            if ! grep -qx "package/$f" <<<"$listing"; then
+              echo "::error::The element tarball has no $f."
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-tarballs
+          path: ${{ runner.temp }}/tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to GitHub Packages
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+          scope: "@2amlogic"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-tarballs
+          path: ${{ runner.temp }}/tarballs
+      # The element first: the React package depends on it.
+      - name: Publish each version not already published
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          for kind in element react; do
+            tarballs=("$RUNNER_TEMP"/tarballs/2amlogic-paste2prompt-"$kind"-*.tgz)
+            if [ "${#tarballs[@]}" -ne 1 ]; then
+              echo "::error::Expected one $kind tarball, found ${#tarballs[@]}."
+              exit 1
+            fi
+            tarball="${tarballs[0]}"
+            manifest="$(tar -xzOf "$tarball" package/package.json)"
+            name="$(jq -r .name <<<"$manifest")"
+            version="$(jq -r .version <<<"$manifest")"
+            if [ "$name" != "@2amlogic/paste2prompt-$kind" ]; then
+              echo "::error::The tarball is $name, not @2amlogic/paste2prompt-$kind."
+              exit 1
+            fi
+            if found="$(npm view "$name@$version" version 2>&1)"; then
+              if [ "$found" = "$version" ]; then
+                echo "$name@$version is already published; nothing to do."
+                continue
+              fi
+            elif ! grep -q E404 <<<"$found"; then
+              echo "::error::npm view failed: $found"
+              exit 1
+            fi
+            npm publish "$tarball" --ignore-scripts
+          done
