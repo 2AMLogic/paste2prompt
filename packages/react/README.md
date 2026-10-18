@@ -18,10 +18,11 @@ export function Root() {
 }
 ```
 
-For bug reports straight into a repository:
+For bug reports straight into your own repository (there is no default; without
+`issueRepo` there is no Open issue button):
 
 ```tsx
-<Paste2Prompt issueRepo="2AMLogic/loom-ui" issueLabels={["loom:triage"]} issueContext={`**Build:** ${BUILD}`} />
+<Paste2Prompt issueRepo="your-org/your-app" issueLabels={["bug"]} issueContext={`**Build:** ${BUILD}`} />
 ```
 
 Without the floating button, open the editor from your own control:
