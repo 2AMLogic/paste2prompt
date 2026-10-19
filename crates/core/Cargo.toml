@@ -25,7 +25,7 @@ tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "
 # break opportunities (Apache-2.0). These are the versions cosmic-text used
 # before #43 replaced it, so shaping and line breaks are unchanged.
 harfrust = { version = "0.5.2", default-features = false, features = ["std"] }
-read-fonts = { version = "0.37.0", default-features = false, features = ["std"] }
+read-fonts = { version = "0.45.0", default-features = false, features = ["std"] }
 unicode-linebreak = "0.1.5"
 # Plain PNG encode of the export; no text chunks (MIT OR Apache-2.0).
 png = "0.18.1"
