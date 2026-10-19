@@ -3,10 +3,10 @@ import {
   type Paste2PromptOverlay,
   TAG_NAME,
   defineOverlay,
-} from "@paste2prompt/element";
+} from "@2amlogic/paste2prompt-element";
 import { createElement, forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
-export type { LauncherPosition } from "@paste2prompt/element";
+export type { LauncherPosition } from "@2amlogic/paste2prompt-element";
 
 export interface Paste2PromptProps {
   /** Where the launcher button floats. Default `bottom-right`. */

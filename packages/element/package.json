@@ -1,9 +1,16 @@
 {
-  "name": "@paste2prompt/element",
-  "version": "0.0.0",
+  "name": "@2amlogic/paste2prompt-element",
+  "version": "0.1.0",
   "description": "paste2prompt as an overlay for any web page: a launcher button, a page capture and the editor, in a web component.",
-  "private": true,
   "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/2AMLogic/paste2prompt.git",
+    "directory": "packages/element"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,7 +21,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/demo.js"
   ],
   "sideEffects": false,
   "scripts": {

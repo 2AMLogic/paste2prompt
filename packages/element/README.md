@@ -1,11 +1,11 @@
-# @paste2prompt/element
+# @2amlogic/paste2prompt-element
 
 paste2prompt as an overlay for any web page, in a web component:
 
 ```html
 <paste2prompt-overlay position="bottom-right"></paste2prompt-overlay>
 <script type="module">
-  import { defineOverlay } from "@paste2prompt/element";
+  import { defineOverlay } from "@2amlogic/paste2prompt-element";
   defineOverlay();
 </script>
 ```
@@ -26,6 +26,30 @@ downloaded. Nothing is sent anywhere, except by Open issue (below).
 The editor is about 580 KB of wasm (gzip), loaded on first open; until then
 the page only carries the launcher. Load it through a bundler that handles
 `new URL("…", import.meta.url)` (Vite, webpack 5, esbuild with a copy step).
+
+## Install
+
+Published to GitHub Packages for 2AMLogic repos, not to npmjs.com. Point
+the `@2amlogic` scope at it in the project's `.npmrc`:
+
+```ini
+@2amlogic:registry=https://npm.pkg.github.com
+```
+
+Then authenticate:
+- **Locally:** a token with `read:packages` in your user `~/.npmrc`
+  (`//npm.pkg.github.com/:_authToken=…`).
+- **GitHub Actions:** `actions/setup-node` with `registry-url:
+  https://npm.pkg.github.com` and `NODE_AUTH_TOKEN: ${{ github.token }}`.
+  This works only after an org admin grants the repo read access under the
+  package's **Manage Actions access**.
+
+New versions publish from `main` when the `version` in `package.json` is
+bumped (`.github/workflows/publish-packages.yml`).
+
+```sh
+npm install @2amlogic/paste2prompt-element
+```
 
 ## Open issue
 
@@ -70,7 +94,7 @@ trunk's cached copy (any `trunk build` in `crates/web` downloads it), then
 `PATH`.
 
 ```sh
-npm run build -w @paste2prompt/element   # wasm + bundle + types into dist/
-npm run demo -w @paste2prompt/element    # dist/demo.js for demo/index.html
+npm run build -w @2amlogic/paste2prompt-element   # wasm + bundle + types into dist/
+npm run demo -w @2amlogic/paste2prompt-element    # dist/demo.js for demo/index.html
 python3 -m http.server                   # from the repo root; open /packages/element/demo/
 ```
