@@ -48,7 +48,9 @@ mod view;
 use leptos::html;
 use leptos::logging::warn;
 use leptos::prelude::*;
-use paste2prompt_core::{EditError, EditId, ImageSize, MAX_NAME_CHARS, MirrorAxis};
+use paste2prompt_core::{
+    EditError, EditId, ElementRef, ImageSize, MAX_NAME_CHARS, MirrorAxis, Region,
+};
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, PointerEvent};
 
@@ -82,6 +84,9 @@ pub struct CanvasState {
     /// Where the history panel sits, chosen by the canvas from the image's
     /// shape; `App` puts [`Arrangement::class`] on the workspace.
     pub arrangement: RwSignal<Arrangement>,
+    /// Elements the embed picked from the page, for the next image's
+    /// session to start with (taken once).
+    pub picks: StoredValue<Vec<(Region, ElementRef)>>,
 }
 
 impl CanvasState {
@@ -95,6 +100,7 @@ impl CanvasState {
             workspace: NodeRef::new(),
             instructions: NodeRef::new(),
             arrangement: RwSignal::new(Arrangement::default()),
+            picks: StoredValue::new(Vec::new()),
         };
         provide_context(state);
         state
@@ -204,7 +210,13 @@ pub fn CanvasView(image: Signal<Option<SourceImage>, LocalStorage>) -> impl Into
         let size = image.with(|i| i.as_ref().and_then(SourceImage::size));
         active.set_value(None);
         ctrl.update(|c| match size {
-            Some(size) => c.load(size),
+            Some(size) => {
+                let picks = state
+                    .picks
+                    .try_update_value(std::mem::take)
+                    .unwrap_or_default();
+                c.load_with_elements(size, picks);
+            }
             None => c.unload(),
         });
     });

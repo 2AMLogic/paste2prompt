@@ -40,6 +40,7 @@
 use std::fmt;
 
 use crate::document::{Document, Edit, EditId, NameError, normalize_hint, normalize_name};
+use crate::element::ElementRef;
 use crate::geometry::{ImageSize, Region};
 use crate::op::{Op, OpError};
 
@@ -259,11 +260,36 @@ impl Editor {
         hint: Option<String>,
         name: Option<String>,
     ) -> Result<EditId, EditError> {
+        self.append(region, op, hint, name, None)
+    }
+
+    /// [`add_edit`](Self::add_edit) for a region picked from a web page,
+    /// keeping the element it was picked from ([`Edit::element`]). An
+    /// [`Op::Label`] needs a name, so it is rejected here.
+    pub fn add_element_edit(
+        &mut self,
+        region: Region,
+        op: Op,
+        element: ElementRef,
+    ) -> Result<EditId, EditError> {
+        self.append(region, op, None, None, Some(element))
+    }
+
+    /// Appends a new edit as one undo step, after checking its op and name.
+    fn append(
+        &mut self,
+        region: Region,
+        op: Op,
+        hint: Option<String>,
+        name: Option<String>,
+        element: Option<ElementRef>,
+    ) -> Result<EditId, EditError> {
         op.validate()?;
         let name = self.check_name(None, &op, name)?;
         let id = self.doc.alloc_id().ok_or(EditError::IdsExhausted)?;
         let mut edit = Edit::new(id, region, op, hint);
         *edit.name_mut() = name;
+        *edit.element_mut() = element.map(Box::new);
         let index = self.doc.edits().len();
         self.commit(Change::Insert { index, edit }, None);
         Ok(id)
@@ -647,6 +673,32 @@ mod tests {
 
     fn ids(ed: &Editor) -> Vec<EditId> {
         ed.document().edits().iter().map(Edit::id).collect()
+    }
+
+    #[test]
+    fn element_edits_keep_their_element() {
+        let mut ed = editor();
+        let el =
+            ElementRef::new("#save".into(), "button".into(), None, Some("Save".into())).unwrap();
+        let id = ed
+            .add_element_edit(region(0.1), Op::Hint, el.clone())
+            .unwrap();
+        // It survives later changes to the edit, and undo/redo.
+        ed.set_hint(id, Some("make it primary".into())).unwrap();
+        ed.set_region(id, region(0.3)).unwrap();
+        assert_eq!(ed.document().edit(id).unwrap().element(), Some(&el));
+        assert!(ed.undo() && ed.undo() && ed.undo());
+        assert!(ed.document().edits().is_empty());
+        assert!(ed.redo());
+        assert_eq!(ed.document().edit(id).unwrap().element(), Some(&el));
+        // A label needs a name, which a picked element doesn't bring.
+        assert_eq!(
+            ed.add_element_edit(region(0.5), Op::Label, el),
+            Err(NameError::LabelNeedsName.into())
+        );
+        // Plain edits have none.
+        let plain = ed.add_edit(region(0.5), Op::Hint, None).unwrap();
+        assert_eq!(ed.document().edit(plain).unwrap().element(), None);
     }
 
     #[test]

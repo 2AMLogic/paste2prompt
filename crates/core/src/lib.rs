@@ -14,6 +14,8 @@
 //! - [`Op`]: translate, scale, mirror, rotate, hint or label.
 //! - [`Edit`]: a region, an op, an optional hint and an optional name
 //!   (unique within the document, ignoring case), with a stable [`EditId`].
+//!   A region the embed picked from a web page also keeps the
+//!   [`ElementRef`] it came from.
 //! - [`Document`]: image size, ordered edits and image-level instructions,
 //!   with a stable JSON format ([`Document::to_json`]).
 //! - [`Editor`]: the only way to change a document; owns undo/redo history
@@ -45,6 +47,7 @@
 
 mod caption;
 mod document;
+mod element;
 mod geometry;
 mod history;
 mod op;
@@ -57,6 +60,7 @@ pub use caption::{
 pub use document::{
     Document, DocumentError, Edit, EditId, FORMAT_VERSION, MAX_NAME_CHARS, NameError,
 };
+pub use element::{ElementError, ElementRef, MAX_ELEMENT_LABEL_CHARS, MAX_SELECTOR_CHARS};
 pub use geometry::{GeometryError, ImageSize, Point, Polygon, Rect, Region};
 pub use history::{EditError, Editor};
 pub use op::{Anchor, Ghost, MAX_SCALE, MirrorAxis, Op, OpError};

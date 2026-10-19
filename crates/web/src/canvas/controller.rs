@@ -33,8 +33,8 @@
 //! row click is [`Controller::select`].
 
 use paste2prompt_core::{
-    Anchor, Edit, EditError, EditId, Editor, ImageSize, MAX_NAME_CHARS, MirrorAxis, NameError, Op,
-    Region,
+    Anchor, Edit, EditError, EditId, Editor, ElementRef, ImageSize, MAX_NAME_CHARS, MirrorAxis,
+    NameError, Op, Region,
 };
 
 use super::geom::{self, Px};
@@ -312,14 +312,33 @@ impl Controller {
 
     /// Starts a new session for an image of `size`: a fresh editor with
     /// empty history. The tool and operation choice carry over.
+    #[cfg(test)]
     pub fn load(&mut self, size: ImageSize) {
+        self.load_with_elements(size, Vec::new());
+    }
+
+    /// Starts a new session for an image of `size`: a fresh editor with
+    /// empty history, the tool and operation choice carried over. It starts
+    /// with one hint edit per element the embed picked from the page (none
+    /// in the standalone app), in order. They are where the session starts,
+    /// like the image, so undo never removes them; the first is selected,
+    /// ready for its hint.
+    pub fn load_with_elements(&mut self, size: ImageSize, picks: Vec<(Region, ElementRef)>) {
+        let mut editor = Editor::new(size);
+        // A hint edit with no name can only be refused for want of ids,
+        // which a new editor has plenty of.
+        let ids: Vec<EditId> = picks
+            .into_iter()
+            .filter_map(|(region, element)| editor.add_element_edit(region, Op::Hint, element).ok())
+            .collect();
         self.session = Some(Session {
-            editor: Editor::new(size),
+            editor: Editor::from_document(editor.into_document()),
             selected: None,
             drag: None,
             press: (0.0, 0.0),
             past_slop: false,
         });
+        self.select(ids.first().copied());
     }
 
     /// Ends the session (no image).
@@ -1192,6 +1211,40 @@ mod tests {
         c.set_tool(Tool::Rect);
         drag(c, Pointer::at(20.0, 20.0), Pointer::at(60.0, 60.0));
         c.selected().expect("new rect is selected")
+    }
+
+    #[test]
+    fn picked_elements_start_the_session_selected_and_not_undoable() {
+        let mut c = Controller::new();
+        let pick = |x: f64, selector: &str| {
+            (
+                Region::rect(
+                    paste2prompt_core::Point::new(x, 0.1),
+                    paste2prompt_core::Point::new(x + 0.2, 0.3),
+                )
+                .unwrap(),
+                ElementRef::new(selector.into(), "button".into(), None, None).unwrap(),
+            )
+        };
+        c.load_with_elements(
+            ImageSize::new(200, 100).unwrap(),
+            vec![pick(0.1, "#save"), pick(0.5, "#cancel")],
+        );
+        let selectors: Vec<_> = edits(&c)
+            .iter()
+            .map(|e| (*e.op(), e.element().map(ElementRef::selector)))
+            .collect();
+        assert_eq!(
+            selectors,
+            [(Op::Hint, Some("#save")), (Op::Hint, Some("#cancel"))]
+        );
+        assert_eq!(c.selected(), Some(edits(&c)[0].id()));
+        assert_eq!(c.op_kind(), OpKind::Hint);
+        assert!(!c.can_undo());
+        // A plain load starts empty, with nothing selected.
+        c.load(ImageSize::new(200, 100).unwrap());
+        assert!(edits(&c).is_empty());
+        assert_eq!(c.selected(), None);
     }
 
     #[test]

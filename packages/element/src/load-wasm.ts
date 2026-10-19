@@ -6,6 +6,8 @@ export interface Editor {
   hasEdits(): boolean;
   /** The caption as plain text, or "" without an image. */
   caption(): string;
+  /** The edits as document JSON (picked elements included), or "" without an image. */
+  documentJson(): string;
   /** The export PNG. Call in the click handler, for `ClipboardItem`. */
   renderPng(): Promise<Blob>;
   /** The pre-filled new-issue URL. Throws without an image. */
@@ -24,9 +26,31 @@ export interface IssueOptions {
   page?: string;
 }
 
+/**
+ * An element picked from the page, for the editor to start with a hint
+ * edit on: its box as fractions of the image's width and height, and what
+ * it is.
+ */
+export interface Pick {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  selector: string;
+  tag: string;
+  role?: string;
+  label?: string;
+}
+
 interface EmbedModule {
   default(): Promise<unknown>;
-  open(shadow: ShadowRoot, container: HTMLElement, image: Blob, name?: string): Editor;
+  open(
+    shadow: ShadowRoot,
+    container: HTMLElement,
+    image: Blob,
+    name?: string,
+    picks?: Pick[],
+  ): Editor;
 }
 
 let loading: Promise<EmbedModule> | undefined;

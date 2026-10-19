@@ -4,14 +4,15 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::element::ElementRef;
 use crate::geometry::{ImageSize, Region};
 use crate::op::{Ghost, Op, OpError};
 
 /// Version of the JSON document format written by [`Document::to_json`].
 /// Bump it on any incompatible change. [`Document::from_json`] reads this
 /// version and every earlier one it still understands (v1, which had no
-/// names), and rejects the rest.
-pub const FORMAT_VERSION: u32 = 2;
+/// names, and v2, which had no picked elements), and rejects the rest.
+pub const FORMAT_VERSION: u32 = 3;
 
 /// The oldest format version [`Document::from_json`] still reads.
 const OLDEST_READABLE_VERSION: u32 = 1;
@@ -46,8 +47,8 @@ impl fmt::Display for EditId {
     }
 }
 
-/// One region-plus-operation pair, with optional hint text and an optional
-/// name.
+/// One region-plus-operation pair, with optional hint text, an optional
+/// name and, for a region picked from a web page, the element it came from.
 ///
 /// The region is always in original-image coordinates, and the op describes a
 /// change to those original pixels. Edits don't compose: edit #2 never sees
@@ -60,6 +61,8 @@ pub struct Edit {
     op: Op,
     hint: Option<String>,
     name: Option<String>,
+    /// Boxed: most edits have none, and it would triple an edit's size.
+    element: Option<Box<ElementRef>>,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +74,9 @@ struct EditRepr {
     /// Absent in v1 documents.
     #[serde(default)]
     name: Option<String>,
+    /// Absent in v1 and v2 documents.
+    #[serde(default)]
+    element: Option<Box<ElementRef>>,
 }
 
 /// Why one stored edit was rejected on load.
@@ -103,6 +109,7 @@ impl TryFrom<EditRepr> for Edit {
             op: r.op,
             hint: normalize_hint(r.hint),
             name,
+            element: r.element,
         })
     }
 }
@@ -202,6 +209,7 @@ impl Edit {
             op,
             hint: normalize_hint(hint),
             name: None,
+            element: None,
         }
     }
 
@@ -235,6 +243,13 @@ impl Edit {
         self.name.as_deref()
     }
 
+    /// The DOM element this region was picked from, for a region the embed
+    /// picked from a web page. It stays with the edit if the region is moved
+    /// or reshaped afterwards. Not printed in the caption (yet).
+    pub fn element(&self) -> Option<&ElementRef> {
+        self.element.as_deref()
+    }
+
     /// The display-only ghost of this edit's result, or `None` for a hint.
     /// See [`Ghost`]: it is never a region and can't be edited further.
     pub fn ghost(&self, size: ImageSize) -> Option<Ghost> {
@@ -256,6 +271,10 @@ impl Edit {
     pub(crate) fn name_mut(&mut self) -> &mut Option<String> {
         &mut self.name
     }
+
+    pub(crate) fn element_mut(&mut self) -> &mut Option<Box<ElementRef>> {
+        &mut self.element
+    }
 }
 
 /// The whole session: the original image's size, the ordered edits and the
@@ -274,7 +293,8 @@ pub struct Document {
 }
 
 /// The on-disk shape. Field names and order are the stable format: v2 adds
-/// each edit's `name`, which v1 documents don't have.
+/// each edit's `name`, which v1 documents don't have, and v3 each edit's
+/// `element`.
 #[derive(Serialize, Deserialize)]
 struct DocumentRepr {
     version: u32,
@@ -395,7 +415,8 @@ impl Document {
     }
 
     /// Parses the JSON format, this version or an older one still read (v1
-    /// has no names), validating every region, op, name and id.
+    /// has no names, v2 no elements), validating every region, op, name,
+    /// element and id.
     pub fn from_json(json: &str) -> Result<Self, DocumentError> {
         // Parse the repr first so version and id errors keep their own
         // variants instead of being folded into a serde message.
@@ -534,6 +555,17 @@ mod tests {
             if i == 1 {
                 *edit.name_mut() = Some("the \"logo\" ünï".into());
             }
+            if i == 4 {
+                *edit.element_mut() = Some(Box::new(
+                    ElementRef::new(
+                        "main > button.save".into(),
+                        "button".into(),
+                        None,
+                        Some("Save".into()),
+                    )
+                    .unwrap(),
+                ));
+            }
             d.edits.push(edit);
         }
         let id = d.alloc_id().unwrap();
@@ -559,30 +591,31 @@ mod tests {
         assert_eq!(back.to_json(), json);
     }
 
-    /// Pins the exact v2 format for every region kind, op kind, anchor form,
-    /// mirror axis, hint form and name form. Renaming a field or variant
+    /// Pins the exact v3 format for every region kind, op kind, anchor form,
+    /// mirror axis, hint form, name form and element form. Renaming a field or variant
     /// breaks this even though it would still round-trip.
     #[test]
     fn json_shape_of_sample_is_pinned() {
         assert_eq!(
             sample().to_json(),
             concat!(
-                r#"{"version":2,"image_size":{"width":1280,"height":720},"next_id":7,"edits":["#,
+                r#"{"version":3,"image_size":{"width":1280,"height":720},"next_id":7,"edits":["#,
                 r#"{"id":1,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
                 r#""op":{"kind":"translate","dx":0.15,"dy":-0.04},"#,
-                r#""hint":"hint 0 with \"quotes\" and ünïcode","name":null},"#,
+                r#""hint":"hint 0 with \"quotes\" and ünïcode","name":null,"element":null},"#,
                 r#"{"id":2,"region":{"kind":"polygon","points":[{"x":0.1,"y":0.1},{"x":0.7,"y":0.2},{"x":0.3,"y":0.6}]},"#,
                 r#""op":{"kind":"scale","sx":1.5,"sy":0.75,"anchor":{"point":{"x":0.1,"y":0.9}}},"#,
-                r#""hint":"hint 1 with \"quotes\" and ünïcode","name":"the \"logo\" ünï"},"#,
+                r#""hint":"hint 1 with \"quotes\" and ünïcode","name":"the \"logo\" ünï","element":null},"#,
                 r#"{"id":3,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
-                r#""op":{"kind":"mirror","axis":"vertical"},"hint":null,"name":null},"#,
+                r#""op":{"kind":"mirror","axis":"vertical"},"hint":null,"name":null,"element":null},"#,
                 r#"{"id":4,"region":{"kind":"polygon","points":[{"x":0.1,"y":0.1},{"x":0.7,"y":0.2},{"x":0.3,"y":0.6}]},"#,
                 r#""op":{"kind":"rotate","degrees":0.3333333333333333,"anchor":"center"},"#,
-                r#""hint":"hint 3 with \"quotes\" and ünïcode","name":null},"#,
+                r#""hint":"hint 3 with \"quotes\" and ünïcode","name":null,"element":null},"#,
                 r#"{"id":5,"region":{"kind":"rect","min":{"x":0.12,"y":0.3},"max":{"x":0.4,"y":0.52}},"#,
-                r#""op":{"kind":"hint"},"hint":"hint 4 with \"quotes\" and ünïcode","name":null},"#,
+                r#""op":{"kind":"hint"},"hint":"hint 4 with \"quotes\" and ünïcode","name":null,"#,
+                r#""element":{"selector":"main > button.save","tag":"button","role":null,"label":"Save"}},"#,
                 r#"{"id":6,"region":{"kind":"rect","min":{"x":0.0,"y":0.0},"max":{"x":1.0,"y":0.08}},"#,
-                r#""op":{"kind":"label"},"hint":null,"name":"nav bar"}],"#,
+                r#""op":{"kind":"label"},"hint":null,"name":"nav bar","element":null}],"#,
                 r#""instructions":"tighten the spacing\nbetween the cards"}"#,
             )
         );
@@ -606,15 +639,15 @@ mod tests {
         ));
         assert_eq!(
             d.to_json(),
-            r#"{"version":2,"image_size":{"width":10,"height":20},"next_id":2,"edits":[{"id":1,"region":{"kind":"rect","min":{"x":0.0,"y":0.0},"max":{"x":0.5,"y":0.25}},"op":{"kind":"translate","dx":0.5,"dy":0.0},"hint":null,"name":null}],"instructions":""}"#
+            r#"{"version":3,"image_size":{"width":10,"height":20},"next_id":2,"edits":[{"id":1,"region":{"kind":"rect","min":{"x":0.0,"y":0.0},"max":{"x":0.5,"y":0.25}},"op":{"kind":"translate","dx":0.5,"dy":0.0},"hint":null,"name":null,"element":null}],"instructions":""}"#
         );
     }
 
     #[test]
     fn from_json_rejects_bad_documents() {
         let good = sample().to_json();
-        for v in [0, 3] {
-            let json = good.replacen(r#""version":2"#, &format!(r#""version":{v}"#), 1);
+        for v in [0, 4] {
+            let json = good.replacen(r#""version":3"#, &format!(r#""version":{v}"#), 1);
             assert_eq!(
                 Document::from_json(&json),
                 Err(DocumentError::UnsupportedVersion(v))
@@ -657,6 +690,13 @@ mod tests {
                 Err(DocumentError::Json(_))
             ));
         }
+        // A picked element is validated too.
+        let bad_tag = good.replacen(r#""tag":"button""#, r#""tag":"<b>""#, 1);
+        assert_ne!(bad_tag, good);
+        assert!(matches!(
+            Document::from_json(&bad_tag),
+            Err(DocumentError::Json(_))
+        ));
         // An id counter that would overflow is rejected, not panicked on.
         let huge = good.replacen(r#""next_id":7"#, r#""next_id":18446744073709551615"#, 1);
         assert_eq!(
@@ -714,15 +754,32 @@ mod tests {
     );
 
     #[test]
-    fn v1_documents_load_and_save_as_v2() {
+    fn v1_documents_load_and_save_as_v3() {
         let d = Document::from_json(V1_JSON).unwrap();
         assert_eq!(d.edits().len(), 2);
         assert!(d.edits().iter().all(|e| e.name().is_none()));
         assert_eq!(d.edits()[1].hint(), Some("red"));
         assert_eq!(d.instructions(), "x");
         let json = d.to_json();
-        assert!(json.starts_with(r#"{"version":2,"#), "{json}");
+        assert!(json.starts_with(r#"{"version":3,"#), "{json}");
         assert_eq!(Document::from_json(&json).unwrap(), d);
+    }
+
+    #[test]
+    fn v2_documents_load_with_no_elements() {
+        let v2 = sample()
+            .to_json()
+            .replacen(r#""version":3"#, r#""version":2"#, 1)
+            .replace(r#","element":null"#, "")
+            .replacen(
+                r#","element":{"selector":"main > button.save","tag":"button","role":null,"label":"Save"}"#,
+                "",
+                1,
+            );
+        assert!(!v2.contains("element"), "{v2}");
+        let d = Document::from_json(&v2).unwrap();
+        assert!(d.edits().iter().all(|e| e.element().is_none()));
+        assert_eq!(d.edits()[1].name(), Some("the \"logo\" ünï"));
     }
 
     #[test]

@@ -136,3 +136,72 @@
   overflow: auto;
   min-height: 0;
 }
+
+/* Element picking, before the capture (picker.ts): outlines over the live
+   page and a bar along the bottom. Only the bar takes the pointer; clicks
+   elsewhere reach the page, where the picker catches them. */
+
+.pick-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+}
+
+.pick-hover,
+.pick-box {
+  position: fixed;
+  box-sizing: border-box;
+  border-radius: 3px;
+}
+
+.pick-hover {
+  border: 2px solid var(--p2p-accent);
+  background: color-mix(in srgb, var(--p2p-accent) 8%, transparent);
+}
+
+.pick-hover.marked {
+  border-color: #dc2626;
+  background: rgb(220 38 38 / 0.08);
+}
+
+.pick-box {
+  border: 2px solid #eab308;
+  background: rgb(234 179 8 / 0.12);
+}
+
+.pick-tag {
+  position: fixed;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #1e3a8a;
+  color: #dbeafe;
+  font: 11px ui-monospace, monospace;
+}
+
+.pick-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--p2p-surface);
+  color: var(--p2p-text);
+  border-top: 1px solid var(--p2p-border);
+  box-shadow: 0 -2px 10px rgb(0 0 0 / 0.15);
+  font: 0.875rem system-ui, sans-serif;
+  pointer-events: auto;
+}
+
+.pick-capture {
+  font-weight: 600;
+}

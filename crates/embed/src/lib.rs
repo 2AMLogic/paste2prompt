@@ -3,7 +3,9 @@
 //! ```js
 //! import init, { open } from "./wasm/paste2prompt_embed.js";
 //! await init();
-//! const editor = open(shadowRoot, container, pngBlob, "Page capture");
+//! const picks = [{ x0: 0.6, y0: 0.82, x1: 0.7, y1: 0.86,
+//!   selector: "button.save", tag: "button", label: "Save" }];
+//! const editor = open(shadowRoot, container, pngBlob, "Page capture", picks);
 //! const url = editor.issueUrl({ repo: "owner/name", labels: ["triage"], page: location.href });
 //! // …later
 //! editor.close();
@@ -13,9 +15,9 @@ mod issue;
 
 use issue::IssueTarget;
 use js_sys::{Array, Promise, Reflect};
-use paste2prompt_web::embed::{self, Embedded};
+use paste2prompt_web::embed::{self, Embedded, Pick};
 use wasm_bindgen::prelude::*;
-use web_sys::{Blob, HtmlElement, ShadowRoot};
+use web_sys::{Blob, HtmlElement, ShadowRoot, console};
 
 /// The open editor. `close()` unmounts it; so does garbage collection, but
 /// don't rely on that.
@@ -39,6 +41,14 @@ impl Editor {
             .caption()
             .map(|(text, _)| text)
             .unwrap_or_default()
+    }
+
+    /// The edits as paste2prompt's document JSON (format version 3), with
+    /// each picked element's `selector`, `tag`, `role` and `label`; `""`
+    /// without an image.
+    #[wasm_bindgen(js_name = documentJson)]
+    pub fn document_json(&self) -> String {
+        self.embedded.document_json().unwrap_or_default()
     }
 
     /// A promise of the export PNG blob, as **Copy image** renders it. Call
@@ -67,16 +77,57 @@ impl Editor {
 
 /// Opens the editor in `container` (an element inside `shadow` that the
 /// editor scrolls in) with `image` loaded. Close the previous editor first.
+///
+/// `picks` are the elements picked from the page, each
+/// `{ x0, y0, x1, y1, selector, tag, role?, label? }` with the corners as
+/// fractions of the image's width and height; the editor starts with a hint
+/// edit on each. One that isn't valid is skipped, with a console warning.
 #[wasm_bindgen]
 pub fn open(
     shadow: ShadowRoot,
     container: HtmlElement,
     image: Blob,
     name: Option<String>,
+    picks: Option<Array>,
 ) -> Editor {
+    let picks = picks
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| {
+                    pick(&p)
+                        .map_err(|e| {
+                            console::warn_1(&format!("paste2prompt: pick skipped: {e}").into())
+                        })
+                        .ok()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Editor {
-        embedded: embed::mount(shadow, container, image, name),
+        embedded: embed::mount(shadow, container, image, name, picks),
     }
+}
+
+fn pick(o: &JsValue) -> Result<Pick, String> {
+    let number = |key: &str| {
+        Reflect::get(o, &key.into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| format!("{key} must be a number"))
+    };
+    let string = |key: &str| {
+        Reflect::get(o, &key.into())
+            .ok()
+            .and_then(|v| v.as_string())
+    };
+    Pick::new(
+        (number("x0")?, number("y0")?),
+        (number("x1")?, number("y1")?),
+        string("selector").unwrap_or_default(),
+        string("tag").unwrap_or_default(),
+        string("role"),
+        string("label"),
+    )
 }
 
 fn issue_target(o: &JsValue) -> Result<IssueTarget, JsError> {
