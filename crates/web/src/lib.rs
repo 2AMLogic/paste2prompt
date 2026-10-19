@@ -35,12 +35,14 @@ pub fn run() {
 /// the history panel, plus the keyboard shortcuts and their `?` sheet.
 ///
 /// For the embed: `initial` is an image to load straight away (the page
-/// capture) and its name, and `edits` is kept up to date with whether there
-/// are edits, so the host can ask before closing.
+/// capture) and its name, `edits` is kept up to date with whether there
+/// are edits, so the host can ask before closing, and `exporter` is given
+/// the export controller, for the host's own export actions.
 #[component]
 fn App(
     #[prop(optional)] initial: Option<(Blob, Option<String>)>,
     #[prop(optional)] edits: Option<Rc<Cell<bool>>>,
+    #[prop(optional)] exporter: Option<Rc<Cell<Option<Exporter>>>>,
 ) -> impl IntoView {
     let store = ImageStore::provide();
     let canvas = CanvasState::provide();
@@ -56,12 +58,16 @@ fn App(
     // Exports read the canvas editor's document (edits and hints) at the
     // gesture. `None` (no session yet) falls back to an empty document.
     let controller = canvas.controller;
+    let host_exporter = exporter;
     let exporter = Exporter::new(
         store,
         DocumentSource::new(move || {
             controller.with_untracked(|c| c.editor().map(|e| e.document().clone()))
         }),
     );
+    if let Some(cell) = host_exporter {
+        cell.set(Some(exporter));
+    }
     let current = store.current();
     // Debug builds only: a generated test card, shown until a real image is
     // loaded. Release builds compile this out. It is not in `ImageStore`, so

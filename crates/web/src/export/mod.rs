@@ -300,6 +300,32 @@ impl Exporter {
         self.toast.set(None);
     }
 
+    /// For the embed: the caption as plain text and the image-level
+    /// instructions, or `None` without an image.
+    pub fn caption(&self) -> Option<(String, String)> {
+        let (_, doc) = self.inputs()?;
+        let doc = doc.ok()?;
+        let text = Caption::from_document(&doc).to_plain_text();
+        Some((text, doc.instructions().to_owned()))
+    }
+
+    /// For the embed: a promise of the export PNG blob, rendered as Copy
+    /// image renders it (busy state included). Rejects with a message.
+    pub fn png_promise(&self) -> Promise {
+        let inputs = (!self.busy.get_untracked())
+            .then(|| self.inputs())
+            .flatten();
+        let this = *self;
+        future_to_promise(async move {
+            let (image, doc) =
+                inputs.ok_or_else(|| JsValue::from_str("Nothing to export right now."))?;
+            match this.render(image, doc).await {
+                Ok(blob) => Ok(blob.into()),
+                Err(message) => Err(JsValue::from_str(&message)),
+            }
+        })
+    }
+
     /// `true` when an image is loaded (not tracked).
     pub fn has_image(&self) -> bool {
         self.store.current().with_untracked(Option::is_some)

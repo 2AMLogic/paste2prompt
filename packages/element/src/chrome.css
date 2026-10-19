@@ -94,6 +94,19 @@
   font: 0.875rem system-ui, sans-serif;
 }
 
+.bar-notice {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.bar-notice a {
+  color: var(--p2p-accent);
+}
+
+.bar .issue {
+  font-weight: 600;
+}
+
 .bar .title {
   flex: 1 1 auto;
   min-width: 0;
@@ -102,8 +115,19 @@
   white-space: nowrap;
 }
 
-.bar .error {
+.p2p-status {
+  margin: 2rem auto;
+  text-align: center;
+  font: 1rem system-ui, sans-serif;
+}
+
+.p2p-status.error {
   color: #dc2626;
+}
+
+.p2p-status + button {
+  display: block;
+  margin: 0 auto;
 }
 
 /* The editor's page: style.css gives it body's padding. */

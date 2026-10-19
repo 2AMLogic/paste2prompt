@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 paste2prompt-web = { path = "../web" }
 wasm-bindgen.workspace = true
+js-sys.workspace = true
 
 [dependencies.web-sys]
 workspace = true

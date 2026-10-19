@@ -17,6 +17,14 @@ to paste into any LLM chat as a visual prompt.
 1. **Client-side only.** No server, no telemetry, no network calls with user
    content. A user's image never leaves the browser. Anything that would
    change this needs an operator decision recorded in this file.
+   - **Embed exception (operator, 2026-10-17):** the embed (`crates/embed`,
+     `packages/`) may, on an explicit click of **Open issue**, open
+     `github.com/<host-configured owner/name>/issues/new` with the title,
+     labels, page address (no query string) and caption text in the URL,
+     plus any context lines the host app sets (`issueContext`, e.g. a build
+     version; operator, 2026-10-19). The image only goes to the clipboard;
+     the user attaches it. Nothing else is sent. This code stays out of `crates/web`, so the standalone site and
+     its privacy guard are unchanged.
 2. **Public repo.** Everything pushed here is world-readable at once. The
    invention firewall applies (workspace `CLAUDE.md` rule 3): never work here
    in a session that holds `notebook` content.

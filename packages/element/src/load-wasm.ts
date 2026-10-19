@@ -4,7 +4,24 @@
 /** A mounted editor (crates/embed `Editor`). */
 export interface Editor {
   hasEdits(): boolean;
+  /** The caption as plain text, or "" without an image. */
+  caption(): string;
+  /** The export PNG. Call in the click handler, for `ClipboardItem`. */
+  renderPng(): Promise<Blob>;
+  /** The pre-filled new-issue URL. Throws without an image. */
+  issueUrl(issue: IssueOptions): string;
   close(): void;
+}
+
+/** Where **Open issue** files, and what goes in the body. */
+export interface IssueOptions {
+  /** `owner/name`. */
+  repo: string;
+  labels?: string[];
+  /** Extra lines for the issue body. */
+  context?: string;
+  /** The captured page, for the body. */
+  page?: string;
 }
 
 interface EmbedModule {

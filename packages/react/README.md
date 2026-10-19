@@ -18,6 +18,13 @@ export function Root() {
 }
 ```
 
+For bug reports straight into your own repository (there is no default; without
+`issueRepo` there is no Open issue button):
+
+```tsx
+<Paste2Prompt issueRepo="your-org/your-app" issueLabels={["bug"]} issueContext={`**Build:** ${BUILD}`} />
+```
+
 Without the floating button, open the editor from your own control:
 
 ```tsx
@@ -31,6 +38,9 @@ const p2p = useRef<Paste2PromptHandle>(null);
 |---|---|---|
 | `position` | `"bottom-right"` | `bottom-left`, `top-right`, `top-left` |
 | `launcher` | `true` | show the floating button |
+| `issueRepo` | | `owner/name`: adds **Open issue**, which copies the PNG and opens a pre-filled new-issue page there |
+| `issueLabels` | | labels for that issue |
+| `issueContext` | | extra lines for its body, e.g. a build version |
 | `onOpen`, `onClose` | | called once the editor shows / is gone |
 
 It wraps the `<paste2prompt-overlay>` web component from
