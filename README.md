@@ -62,7 +62,16 @@ The repo is a Cargo workspace:
 
 - `crates/core`: the edit model, caption text and PNG export, with no browser
   dependencies. Tested natively.
-- `crates/web`: the Leptos (CSR) browser shell, built with trunk.
+- `crates/web`: the Leptos (CSR) browser shell, built with trunk. It also
+  mounts inside a host page's shadow root, for the embed.
+- `crates/embed`: the embed's wasm entry points, built with wasm-pack for
+  `packages/element`.
+
+The embed's npm packages are an npm workspace:
+
+- `packages/element`: the `<paste2prompt-overlay>` web component (launcher,
+  page capture, the editor in a shadow root). See its README.
+- `packages/react`: a React wrapper around it.
 
 Checks, as CI runs them:
 

@@ -1,0 +1,33 @@
+{
+  "name": "@paste2prompt/element",
+  "version": "0.0.0",
+  "description": "paste2prompt as an overlay for any web page: a launcher button, a page capture and the editor, in a web component.",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/embed --target web --release --no-pack --out-dir ../../packages/element/dist/wasm",
+    "build": "npm run build:wasm && node build.mjs && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "demo": "node build.mjs --demo && echo \"Serve the repo root (python3 -m http.server) and open /packages/element/demo/\""
+  },
+  "dependencies": {
+    "html-to-image": "^1.11.13"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}

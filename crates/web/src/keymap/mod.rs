@@ -93,9 +93,7 @@ impl Shortcuts {
         if self.is_open() {
             return;
         }
-        let active = document()
-            .active_element()
-            .and_then(|e| e.dyn_into::<HtmlElement>().ok());
+        let active = crate::dom::active_element().and_then(|e| e.dyn_into::<HtmlElement>().ok());
         self.return_focus.set_value(active);
         self.open.set(true);
         let close = self.close_button;
@@ -151,7 +149,7 @@ impl Targets {
         };
         let ctrl = self.canvas.controller;
         let ctx = Context {
-            text_field: target_is_editable(ev.target()),
+            text_field: target_is_editable(crate::dom::event_origin(&ev)),
             text_selected: export::page_text_selected(),
             dragging: ctrl.with_untracked(|c| c.dragging() || c.reordering()),
             sheet_open: self.sheet.is_open(),

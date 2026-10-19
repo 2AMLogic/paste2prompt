@@ -119,10 +119,7 @@ impl ImageInput {
         // The button is gone with the image; give focus to the empty
         // state's Open button once it shows.
         request_animation_frame(|| {
-            if let Some(el) = document()
-                .query_selector(".empty-state button.primary")
-                .ok()
-                .flatten()
+            if let Some(el) = crate::dom::query_selector(".empty-state button.primary")
                 .and_then(|e| e.dyn_into::<HtmlElement>().ok())
             {
                 let _ = el.focus();
@@ -139,7 +136,7 @@ impl ImageInput {
         let Some(data) = ev.clipboard_data() else {
             return;
         };
-        let editable = target_is_editable(ev.target());
+        let editable = target_is_editable(crate::dom::event_origin(&ev));
         let entries = clipboard_entries(&data);
         let borrowed: Vec<Entry<'_>> = entries
             .iter()
@@ -204,7 +201,7 @@ impl ImageInput {
     }
 
     fn on_drag_over(&self, ev: DragEvent) {
-        if carries_files(&ev) || !target_is_editable(ev.target()) {
+        if carries_files(&ev) || !target_is_editable(crate::dom::event_origin(&ev)) {
             // Cancelling `dragover` is what makes the window a drop target.
             // Text dragged over a text field keeps its default behaviour.
             ev.prevent_default();
@@ -226,7 +223,7 @@ impl ImageInput {
     fn on_drop(&self, ev: DragEvent) {
         self.drag_depth.set_value(0);
         self.dragging.set(false);
-        if !carries_files(&ev) && target_is_editable(ev.target()) {
+        if !carries_files(&ev) && target_is_editable(crate::dom::event_origin(&ev)) {
             return; // ordinary text drop into a field
         }
         // Otherwise the browser would navigate to the file or link.

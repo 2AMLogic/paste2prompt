@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/web"]
+members = ["crates/core", "crates/web", "crates/embed"]
 # Vendored tooling trees (Loom, Claude, agent skills) are not part of the
 # Rust build, even if they ever ship a Cargo.toml of their own.
 exclude = [".loom", ".claude", ".agents"]

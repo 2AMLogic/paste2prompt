@@ -106,6 +106,26 @@ jobs:
         env:
           WRANGLER_SEND_METRICS: "false"
 
+  packages:
+    name: JS packages (typecheck, bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The runner's own Node. The wasm half of packages/element needs
+      # wasm-pack and isn't built here; the bundle and the types don't need it.
+      - name: npm ci
+        run: npm ci --no-audit --no-fund
+      # packages/react type-checks against packages/element's emitted
+      # declarations (dist/*.d.ts), so emit those first.
+      - name: typecheck
+        run: |
+          npx --no-install tsc -p packages/element/tsconfig.json
+          npm run typecheck -w @paste2prompt/react
+      - name: bundle packages/element
+        working-directory: packages/element
+        run: node build.mjs --demo
+
   privacy-guard-tests:
     name: privacy guard tests
     runs-on: ubuntu-latest

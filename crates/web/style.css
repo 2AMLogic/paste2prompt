@@ -1,9 +1,13 @@
-:root {
+/* :host and .p2p-page are the embed's equivalents of :root and body: the
+   app mounted in a shadow root, in a scrolling container (crates/embed). */
+:root,
+:host {
   color-scheme: light dark;
   font-family: system-ui, sans-serif;
 }
 
-body {
+body,
+.p2p-page {
   margin: 0;
   padding: 1rem;
 }

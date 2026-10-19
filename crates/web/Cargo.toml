@@ -47,6 +47,7 @@ features = [
     "Navigator",
     "PointerEvent",
     "ResizeObserver",
+    "ShadowRoot",
     "Selection",
     "TextMetrics",
     "Url",

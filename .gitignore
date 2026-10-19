@@ -93,3 +93,6 @@ scripts/__pycache__/
 .claude/skills/repo/.install-local.json
 .squad/
 .claude/skills/squad/.install-local.json
+
+# JS packages (packages/*): build output, including the wasm-pack output
+packages/*/dist/

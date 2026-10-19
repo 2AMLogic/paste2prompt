@@ -51,11 +51,8 @@ fn report(result: Result<(), EditError>) {
 /// their place after a row moves or disappears.
 fn focus_later(selector: String) {
     request_animation_frame(move || {
-        if let Some(el) = document()
-            .query_selector(&selector)
-            .ok()
-            .flatten()
-            .and_then(|e| e.dyn_into::<HtmlElement>().ok())
+        if let Some(el) =
+            crate::dom::query_selector(&selector).and_then(|e| e.dyn_into::<HtmlElement>().ok())
         {
             let _ = el.focus();
         }
