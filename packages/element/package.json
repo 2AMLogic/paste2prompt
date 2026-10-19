@@ -1,6 +1,6 @@
 {
   "name": "@2amlogic/paste2prompt-element",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "paste2prompt as an overlay for any web page: a launcher button, a page capture and the editor, in a web component.",
   "license": "PolyForm-Noncommercial-1.0.0",
   "repository": {
