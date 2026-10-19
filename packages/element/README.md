@@ -10,14 +10,16 @@ paste2prompt as an overlay for any web page, in a web component:
 </script>
 ```
 
-Clicking the launcher captures the viewport and opens the editor (the
-standalone app's editor, `crates/web`, mounted in the element's shadow root)
-with the capture loaded. The output is the usual paste2prompt PNG, copied or
+Clicking the launcher starts [picking elements](#picking-elements), then
+captures the viewport and opens the editor (the standalone app's editor,
+`crates/web`, mounted in the element's shadow root) with the capture loaded
+and a hint edit on each picked element. The output is the usual paste2prompt PNG, copied or
 downloaded. Nothing is sent anywhere, except by Open issue (below).
 
 - **Attributes:** `position` (`bottom-right`, `bottom-left`, `top-right`,
   `top-left`), `no-launcher` (hide the button; call `open()` yourself),
-  `issue-repo` and `issue-labels` (below).
+  `no-picker` (capture straight away, without picking), `issue-repo` and
+  `issue-labels` (below).
 - **Property:** `issueContext`, extra lines for the issue body.
 - **Methods:** `open()`, `close(force?)` (asks before discarding marks
   unless `force`), `isOpen`.
@@ -75,6 +77,30 @@ route. If the browser blocks the new tab, the bar shows a link to it instead.
   document.querySelector("paste2prompt-overlay").issueContext = `**Build:** ${BUILD}`;
 </script>
 ```
+
+## Picking elements
+
+Before the capture, the page stays live under a bar: hovering outlines the
+element under the pointer, and a click or tap marks it (again to unmark).
+The page doesn't see those clicks. **Capture** (or Enter) captures the
+viewport, and the editor opens with a hint edit on each marked element, the
+first one selected for its hint; **Cancel** (or Esc) closes without
+capturing. Capture with nothing marked to just annotate the page.
+
+For each element the editor keeps, with the edit in its document JSON:
+- `selector`: a CSS selector that matched only that element, built upward
+  from it (a unique `data-testid` or id where there is one);
+- `tag`, and `role` if it has the attribute;
+- `label`: its `aria-label`, else `data-testid`, else its text, cut to 40
+  characters.
+
+The caption doesn't print them yet. Adding them changes the output format
+(the repo's CLAUDE.md rule 4), which waits for the model comparison in
+`docs/EMBED.md`.
+
+The picker is adapted from [ProPanes](https://github.com/tinkerer/propanes)'
+element picker (MIT, Copyright (c) 2026 Amir Hirsch); `src/picker.ts` carries
+its license notice, and the bundle keeps it.
 
 ## Capture
 

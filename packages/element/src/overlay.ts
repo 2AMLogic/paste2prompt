@@ -2,6 +2,7 @@ import appCss from "../../../crates/web/style.css";
 import chromeCss from "./chrome.css";
 import { captureViewport } from "./capture.js";
 import { type Editor, type IssueOptions, loadEditor } from "./load-wasm.js";
+import { type PickedElement, type PickSession, pickBoxes, startPicker } from "./picker.js";
 
 /** Where the launcher button floats. */
 export type LauncherPosition = "bottom-right" | "bottom-left" | "top-right" | "top-left";
@@ -30,12 +31,14 @@ function styles(): CSSStyleSheet {
 }
 
 /**
- * `<paste2prompt-overlay>`: a floating launcher button that captures the
- * page and opens the paste2prompt editor over it.
+ * `<paste2prompt-overlay>`: a floating launcher button that lets the user
+ * pick elements of the page, captures it and opens the paste2prompt editor
+ * over it, with a hint edit on each picked element.
  *
  * Attributes:
  * - `position`: where the launcher floats (`bottom-right` by default).
  * - `no-launcher`: hide the launcher; open with {@link open} instead.
+ * - `no-picker`: capture straight away, without picking elements first.
  * - `issue-repo`: `owner/name` of a GitHub repository. The panel then has
  *   an **Open issue** button: it copies the annotated PNG and opens that
  *   repository's new-issue page, pre-filled with the page address and the
@@ -65,6 +68,8 @@ export class Paste2PromptOverlay extends Base {
   #pageAddress = "";
   #page: HTMLElement;
   #editor: Editor | undefined;
+  /** The element pick in progress, before the capture. */
+  #picking: PickSession | undefined;
   #busy = false;
   /** Bumped by every open and close, so a superseded open stops. */
   #attempt = 0;
@@ -108,21 +113,34 @@ export class Paste2PromptOverlay extends Base {
   }
 
   /**
-   * Captures the viewport and opens the editor with it. Does nothing if the
-   * editor is already open or opening.
+   * Lets the user pick elements (unless `no-picker` is set), then captures
+   * the viewport and opens the editor with it. Does nothing if the editor
+   * is already open or opening.
    */
   async open(): Promise<void> {
     if (this.#editor || this.#busy) return;
     const attempt = ++this.#attempt;
     const stale = () => attempt !== this.#attempt;
     this.#busy = true;
-    this.#launcher.setAttribute("aria-busy", "true");
     try {
-      // Start loading the editor while the page is captured.
+      // Start loading the editor while the user picks and the page is
+      // captured.
       const editor = loadEditor();
       // Handled below; this only stops an unhandled rejection when the
       // capture fails first.
       editor.catch(() => {});
+      let picked: PickedElement[] = [];
+      if (!this.hasAttribute("no-picker")) {
+        // The pick bar covers the launcher's corner.
+        this.#launcher.hidden = true;
+        this.#picking = startPicker(this.#shadow, this);
+        const result = await this.#picking.done;
+        this.#picking = undefined;
+        this.#launcher.hidden = false;
+        if (stale() || result === null) return;
+        picked = result;
+      }
+      this.#launcher.setAttribute("aria-busy", "true");
       // The page address without the query string, which often carries
       // tokens; the hash stays, since hash-routed apps keep the route there.
       this.#pageAddress = `${location.origin}${location.pathname}${location.hash}`;
@@ -130,6 +148,8 @@ export class Paste2PromptOverlay extends Base {
       // The panel is part of this element, which the capture leaves out.
       this.#status("Capturing the page…");
       this.#panel.hidden = false;
+      // Measured now, against the viewport the capture is about to take.
+      const picks = pickBoxes(picked);
       let image: Blob;
       try {
         image = await captureViewport(this);
@@ -152,7 +172,7 @@ export class Paste2PromptOverlay extends Base {
         return;
       }
       this.#page.replaceChildren();
-      this.#editor = mod.open(this.#shadow, this.#page, image, "Page capture");
+      this.#editor = mod.open(this.#shadow, this.#page, image, "Page capture", picks);
       const issue = this.#issue();
       this.#issueButton.hidden = !issue;
       if (issue) this.#issueButton.textContent = `Open issue in ${issue.repo}`;
@@ -260,8 +280,11 @@ export class Paste2PromptOverlay extends Base {
   close(force = false): void {
     const editor = this.#editor;
     if (editor && !force && editor.hasEdits() && !window.confirm(DISCARD_PROMPT)) return;
-    // Also stops an open still capturing or loading.
+    // Also stops an open still picking, capturing or loading.
     this.#attempt++;
+    this.#picking?.cancel();
+    this.#picking = undefined;
+    this.#launcher.hidden = false;
     this.#idle();
     this.#editor = undefined;
     editor?.close();

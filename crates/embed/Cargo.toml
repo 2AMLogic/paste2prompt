@@ -17,4 +17,4 @@ js-sys.workspace = true
 
 [dependencies.web-sys]
 workspace = true
-features = ["Blob", "HtmlElement", "ShadowRoot"]
+features = ["Blob", "console", "HtmlElement", "ShadowRoot"]

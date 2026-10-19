@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use paste2prompt_core::APP_NAME;
+use paste2prompt_core::{APP_NAME, ElementRef, Region};
 use web_sys::Blob;
 
 use crate::canvas::{CanvasState, CanvasToolbar, CanvasView, SourceImage};
@@ -30,17 +30,25 @@ pub fn run() {
     leptos::mount::mount_to_body(|| view! { <App /> });
 }
 
+/// What the embed opens the app with: the page capture, its name, and the
+/// elements picked from the page (each a region in the capture).
+struct Initial {
+    image: Blob,
+    name: Option<String>,
+    picks: Vec<(Region, ElementRef)>,
+}
+
 /// App shell: header with **Open** and **Start over**, the empty state until an image is
 /// loaded, then the canvas view with its tools, the instructions box and
 /// the history panel, plus the keyboard shortcuts and their `?` sheet.
 ///
 /// For the embed: `initial` is an image to load straight away (the page
-/// capture) and its name, `edits` is kept up to date with whether there
+/// capture), its name and the elements picked from the page, `edits` is kept up to date with whether there
 /// are edits, so the host can ask before closing, and `exporter` is given
 /// the export controller, for the host's own export actions.
 #[component]
 fn App(
-    #[prop(optional)] initial: Option<(Blob, Option<String>)>,
+    #[prop(optional)] initial: Option<Initial>,
     #[prop(optional)] edits: Option<Rc<Cell<bool>>>,
     #[prop(optional)] exporter: Option<Rc<Cell<Option<Exporter>>>>,
 ) -> impl IntoView {
@@ -48,8 +56,10 @@ fn App(
     let canvas = CanvasState::provide();
     Shortcuts::provide();
     let input = ImageInput::new(store, canvas.has_edits());
-    if let Some((blob, name)) = initial {
-        input.load(blob, name);
+    if let Some(Initial { image, name, picks }) = initial {
+        // Taken by the session the capture starts.
+        canvas.picks.set_value(picks);
+        input.load(image, name);
     }
     if let Some(edits) = edits {
         let has_edits = canvas.has_edits();

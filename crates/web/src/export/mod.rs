@@ -309,6 +309,13 @@ impl Exporter {
         Some((text, doc.instructions().to_owned()))
     }
 
+    /// For the embed: the document as JSON ([`Document::to_json`]), with
+    /// the elements picked from the page, or `None` without an image.
+    pub fn document_json(&self) -> Option<String> {
+        let (_, doc) = self.inputs()?;
+        Some(doc.ok()?.to_json())
+    }
+
     /// For the embed: a promise of the export PNG blob, rendered as Copy
     /// image renders it (busy state included). Rejects with a message.
     pub fn png_promise(&self) -> Promise {
