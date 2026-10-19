@@ -21,7 +21,7 @@ the page.
 ## What it is not
 
 - **Not an agent bridge.** [ProPanes](https://github.com/tinkerer/propanes)
-  (MIT per its author) pairs a similar overlay with a server that lets agents
+  (MIT-licensed) pairs a similar overlay with a server that lets agents
   drive the live page. The embed has no server and opens no connections. It
   produces a PNG and hands it to the user or the host.
 - **Not a fork of the editor.** The edit model, caption and PNG render stay in
@@ -106,7 +106,8 @@ host app
   TypeScript editor over a headless wasm core, means two UIs to keep in step;
   we'd only choose it if Leptos doesn't behave inside a shadow root (global
   key handlers, focus and `document()` lookups need checking).
-- **Lazy load.** The release wasm is about 590 KB brotli. The launcher is a
+- **Lazy load.** The release wasm is roughly 600 KB compressed (approximate;
+  re-measure with the release build before quoting it). The launcher is a
   few KB; the wasm loads on first open.
 - **Capture**
   - Default: `html-to-image` (MIT), which re-renders the DOM to a canvas. It
@@ -152,10 +153,16 @@ not to the embed.
    embed packages under MIT/Apache-2.0, or offer commercial licenses
    separately. Our own dashboard is fine either way; outside adoption isn't.
    Operator decision, to be recorded in `CLAUDE.md`.
-2. **Rule 1 scope.** The embed sends nothing itself, but `onSubmit` hands the
-   user's capture to host code that may upload it. Is "the library makes no
-   network calls; hosts decide" the right reading of rule 1 for the embed? To
-   be recorded in `CLAUDE.md` with the answer.
-3. **Porting ProPanes code.** Its author says it is MIT, but the repo has no
-   LICENSE file yet. Port code (with an MIT header and attribution) only
-   after the file lands; until then, take ideas only.
+2. **Rule 1 scope.** Two outputs carry user content off the page:
+   - **Open GitHub issue** puts the caption text (plus title, labels and page
+     address) in a github.com URL. Decided: the operator recorded an embed
+     exception to rule 1 in `CLAUDE.md` on 2026-10-17, which lands with the
+     Open issue code (PR #89). That exception covers only this button.
+   - **`onSubmit`** hands the user's capture to host code that may upload it.
+     Still open: is "the library makes no network calls; hosts decide" the
+     right reading of rule 1 here? To be recorded in `CLAUDE.md` with the
+     answer.
+3. **Porting ProPanes code.** Resolved: ProPanes is MIT-licensed (its
+   `LICENSE` landed in tinkerer/propanes `5082b26`, 2026-10-17). Ported code
+   keeps an MIT header with the copyright line and permission notice, and
+   the commit records the upstream path and commit.
