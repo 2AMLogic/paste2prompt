@@ -19,9 +19,11 @@
 #
 # (the same HTML-comment marker convention as `<!-- loom:standdown claim=... -->`
 # and `<!-- loom:fallback-evaluated sha=... -->`), so the verdict records which
-# tree it covers. This script compares that recorded SHA against the PR's
-# CURRENT head SHA and reports FRESH / STALE, optionally performing the
-# clear+re-queue transition itself.
+# tree it covers. `approved` / `changes-requested` are the canonical spellings
+# writers emit; readers also tolerate `approve` / `request-changes`. This
+# script compares that recorded SHA against the PR's CURRENT head SHA and
+# reports FRESH / STALE, optionally performing the clear+re-queue transition
+# itself.
 #
 # Decision, in priority order (first match wins):
 #   1. NOT_OPEN     — the PR is no longer open (merged, or closed unmerged).
@@ -216,7 +218,7 @@
 #
 # --clear is suppressed (DECISION stays STALE, CLEARED=0) when the PR carries
 # an explicit hold label — `loom:blocked`, `loom:operator`, or
-# `loom:operator-only`. Those mark a PR a human (or Champion's capped-PR
+# `loom:frozen` (the three holds, #11795). Those mark a PR a human (or Champion's capped-PR
 # recovery pass) deliberately took out of automated flow; silently re-queueing
 # it for review would undo that decision. Callers must still treat the verdict
 # as untrustworthy: STALE is STALE whether or not it was cleared.
@@ -394,10 +396,15 @@ has_label() { printf '%s\n' "$LABELS" | grep -qx -- "$1"; }
 # The explicit-hold labels: a PR an operator (or Champion's capped-PR recovery
 # pass) deliberately took out of automated flow. Echoes the first one present,
 # or nothing. Shared by --clear (step 5) and --anchor (step 3b) so the two
-# write paths can never disagree about what "parked" means.
+# write paths can never disagree about what "parked" means. The set is the
+# registry's holds plus the retired names `labels migrate` has not moved yet
+# (#11795; #11843 drops --with-retired). The fallback (missing or older daemon)
+# is pinned by label_literal_guard.rs between the registry's `park` and `hold`
+# properties.
 hold_label() {
   local held
-  for held in "loom:blocked" "loom:operator" "loom:operator-only"; do
+  # requires-daemon: labels optional   a missing or older binary takes the fallback list
+  for held in $("${LOOM_DAEMON_BIN:-loom-daemon}" labels list --property hold --with-retired 2>/dev/null || echo loom:blocked loom:operator loom:frozen loom:operator-only loom:operator-decision loom:operator-mechanical loom:operator-blocked loom:needs-capability); do
     if has_label "$held"; then echo "$held"; return 0; fi
   done
   echo ""
@@ -495,8 +502,15 @@ COMMENTS_JSON="$("${LOOM_DAEMON_BIN:-loom-daemon}" forge trusted-comments <<<"$C
 # body is filtered out via `select` rather than raising a per-item jq error.
 # A short (abbreviated) SHA is accepted defensively but never emitted by the
 # roles, which always stamp the full `headRefOid`.
-MARKER_TEST="<!-- loom:verdict-sha sha=[0-9a-f]{7,40} verdict=$VERDICT_TOKEN -->"
-MARKER_CAPTURE="<!-- loom:verdict-sha sha=(?<sha>[0-9a-f]{7,40}) verdict=$VERDICT_TOKEN -->"
+# Readers are lenient about the verdict spelling (a hand-posted or in-session
+# marker may say `approve` / `request-changes`); writers stay canonical.
+case "$VERDICT_TOKEN" in
+  approved) VERDICT_ALT='approved|approve' ;;
+  changes-requested) VERDICT_ALT='changes-requested|request-changes' ;;
+  *) VERDICT_ALT="$VERDICT_TOKEN" ;;
+esac
+MARKER_TEST="<!-- loom:verdict-sha sha=[0-9a-f]{7,40} verdict=($VERDICT_ALT) -->"
+MARKER_CAPTURE="<!-- loom:verdict-sha sha=(?<sha>[0-9a-f]{7,40}) verdict=($VERDICT_ALT) -->"
 MARKER_LINES="$(jq -r --arg t "$MARKER_TEST" --arg c "$MARKER_CAPTURE" '
   .[]
   | select(.body != null and (.body | test($t)))
