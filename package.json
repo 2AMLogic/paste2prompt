@@ -11,10 +11,13 @@
     "build:packages": "npm run build -w @2amlogic/paste2prompt-element -w @2amlogic/paste2prompt-react"
   },
   "devDependencies": {
-    "wrangler": "4.149.0"
+    "wrangler": "4.152.0"
   },
   "workspaces": [
     "packages/element",
     "packages/react"
-  ]
+  ],
+  "overrides": {
+    "undici": ">=7.30.1 <8"
+  }
 }
