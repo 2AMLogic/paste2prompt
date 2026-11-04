@@ -206,47 +206,24 @@ Judge verdicts and Doctor counts. Grouped usage inherits the source journal's
 attribution window and is not a measured provider bill. Free-form role error text,
 configuration blobs, prompts and account contents are not exported.
 
-## Role-runner ticks join stories after the fact (#9168)
+## How a later join works
+
+Every execution — a sweep, a role-runner tick, a CI run — is its own root
+trace. Nothing derives a shared trace ID across them, and there is no
+per-issue "story" trace. A consumer that wants the spans of one issue or PR
+joins them afterwards by attribute: `loom.repo` plus `loom.issue` /
+`loom.pr_number`, with `loom.sweep_id` naming the execution. The attributes a
+join can rely on, and which spans carry each, are the "Span join-facts
+contract" table in `telemetry-schema.md`; this document does not restate it.
+CI `loom.ci.run` and `loom.ci.job` spans carry `loom.repo` and
+`loom.pr_number` when the run belongs to a PR.
 
 A role-runner tick (Judge, Curator, Champion, Doctor, …) is spawned without a
 target, so its `loom.role_attempt` root — present only when the tick launched
-(#9438) — is its own trace. Once the tick ends,
-the same transcript pass that tallies `role_tick.outcome` `actions` also
-collects the issues and PRs the tick **wrote** to: `gh issue|pr
-comment/edit/close/reopen/…`, `gh pr merge|review|ready`, `merge-pr.sh <N>`
-(not `--dry-run`), and `gh api` `POST`/`PATCH`/`PUT`/`DELETE` on
-`repos/<o>/<r>/{issues,pulls}/<N>/…`. Reads (`view`, `list`, `diff`,
-`checks`, `GET`) never count; a command naming another repository (`-R`,
-URL, explicit API path, `GH_REPO`) or run after a `cd` out of the tick's
-checkout is refused, and one whose repository cannot be told (`cd $DIR`,
-`GH_HOST`, `GIT_DIR`) yields nothing (#9180); a branch name or `$VAR` names
-nothing. Here-document bodies — also `cat<<EOF` and the
-`--body "$(cat <<'EOF' … EOF)"` form — are never parsed as commands.
-
-Each distinct target gets one additional `loom.role_attempt` span in its story
-trace, parented to the story root (`story_context(repo_id, N)`). One batched,
-cached (10 min) GraphQL `issueOrPullRequest` lookup says whether
-the number is an issue — its own story — or a PR, which joins a story by the
-CI stitcher's rule: exactly one same-repo closing issue, counting the
-`feature/issue-N` head branch. Zero or several candidates, a foreign closing
-reference, a failed lookup, or an unresolvable `repo_id` → no story span.
-The whole lookup — `repo_id` included — shares one 20 s deadline per tick, and
-a failed or rate-limited lookup is not retried for that repository for 60 s. The
-span id is derived from the story root, `loom.role_tick`, the tick's execution
-id (`loom.sweep_id`) and the target (`pr:<M>` / `issue:<N>`), so a re-emit
-yields the same id. It carries `loom.role`, `loom.issue`, `loom.pr_number`
-(PR targets), `loom.story`, `loom.story.key_version`, `loom.repo`,
-`loom.result`, `loom.runtime`/`loom.model` when known,
-`loom.timing_source=tick` — its start and end are the whole tick's, not the
-individual action's — and `loom.attempt.worked` derived from the tick's result
-label (#9420), plus a link to the tick's own root. The spans are
-appended to the tick's trace journal and drained like every lifecycle span.
-Its token usage is journalled as per-model `loom.runtime.usage` spans:
-`scope=execution` under the tick's own root, and `scope=attempt` under the
-story span only when exactly one target is stitched (#9303).
-All of this is best-effort after the tick's child has exited; it never fails
-the tick. Non-Claude runtimes record no transcript actions, so their ticks
-join no story yet.
+(#9438) — is its own trace. Its token usage is journalled as per-model
+`loom.runtime.usage` spans with `scope=execution` under the tick's own root
+(#9303). All of this is best-effort after the tick's child has exited; it
+never fails the tick.
 
 Role attempts and their runtime spans additionally carry a measured host
 memory state at each observed boundary — span begin and span end — as
@@ -305,8 +282,7 @@ instead, from what the launch site observed:
 The adapter's `RECOVERABLE` category is its catch-all for an exit it did not
 recognize, so it yields no class of its own; the status message still quotes
 it (`role child exited with code 1; runtime adapter reported RECOVERABLE`).
-The tick's story copies (`loom.timing_source=tick`) carry the same class,
-code and message. A recovered `process_lost` close carries
+The tick's own trace carries the same class, code and message. A recovered `process_lost` close carries
 `loom.failure_class=supervisor-lost` — the child and its supervisor both
 exited before either recorded a close — and keeps an unset status.
 A run a planned roll ended (#11263) instead closes as
@@ -317,11 +293,31 @@ unplanned crash stays `process_lost`. A resumed role run carries
 `loom.resumed_from` = that item id. Failure-rate queries and the role-failures
 watch should exclude `interrupted_by_roll`.
 
+A run a lost EC2 host ended (#12876) closes as
+`loom.result=interrupted_by_host_loss`, unset status, with
+`loom.host.loss_cause` = `spot_reclaim` (IMDS `spot/instance-action`) or
+`rebalance` (`events/recommendations/rebalance`). On an EC2 host (DMI vendor
+Amazon; any other host runs no watcher and makes no IMDS request) the daemon
+polls both endpoints about every 5 s while sweeps are in flight, and on the
+first notice of each kind: closes every in-flight sweep span that way, sends the
+captain a `release` with outcome `host_lost` for each assignment (the row ends
+at once, no hold is armed, instead of expiring at its TTL), and emits one
+`loom.host.interruption_notice` span (instant, own root). A non-spot EC2 host
+answers 404 on both and emits nothing. Its attributes: `loom.host.id`,
+`loom.host.instance_type`, `loom.host.loss_cause`,
+`loom.host.interruption.kind`, `loom.host.interruption.notice_time` (RFC 3339;
+for a spot reclaim, when the daemon first saw it), `loom.host.interruption.action_time`
+(spot reclaim only), `loom.host.in_flight_sweeps` (comma-separated sweep ids),
+`loom.host.interruption.sweeps_closed` and `loom.host.assignments_released`.
+Failure-rate queries should exclude `interrupted_by_host_loss` too. Moving the
+work to another host is #6704.
+
 A step's `loom.sweep` root (`loom.sweep_id=step-<role>-<item>-…`, #12253) is
 closed by the step's own end, when the reaper, a cancel or startup sees the
 session exit: `loom.result` is the same `success`/`failure` its
 `role_tick.outcome` reports, with `loom.role`, the step's model and effort,
-`loom.exit_code` when known, and on a failure a `loom.failure_class` of
+`loom.exit_code` when known, `loom.story_points` when the item is sized
+(#12957), and on a failure a `loom.failure_class` of
 `timeout-ceiling`, `cancelled`, `step-outcome-failed` (the session's
 `LOOM_STEP_OUTCOME class=failed`), `exit-<code>` or `exit-unobserved`. A step a
 roll stopped closes as `interrupted_by_roll`. Orphan recovery leaves a step's
