@@ -59,6 +59,10 @@ fn App(
     if let Some(Initial { image, name, picks }) = initial {
         // Taken by the session the capture starts.
         canvas.picks.set_value(picks);
+        // A capture that fails to decode starts no session; without this the
+        // picks would attach to whatever image is opened next.
+        let staged = canvas.picks;
+        input.on_load_failed(move || staged.set_value(Vec::new()));
         input.load(image, name);
     }
     if let Some(edits) = edits {

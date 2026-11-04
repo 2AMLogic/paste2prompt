@@ -34,6 +34,8 @@
 // page under the picker doesn't see the clicks, and each pick records the
 // label and role docs/EMBED.md ("Element identity") asks for.
 
+import { escapeIdent, fitRole, fitSelector } from "./selector.js";
+
 /** An element picked from the page, and what to call it. */
 export interface PickedElement {
   element: Element;
@@ -57,8 +59,6 @@ export interface PickSession {
 
 /** Longest label kept, in characters (crates/core MAX_ELEMENT_LABEL_CHARS). */
 const MAX_LABEL_CHARS = 40;
-/** Longest selector kept, in characters (crates/core MAX_SELECTOR_CHARS). */
-const MAX_SELECTOR_CHARS = 512;
 /** How many ancestors a selector climbs before giving up on uniqueness. */
 const MAX_SELECTOR_DEPTH = 5;
 /** Classes per selector segment: enough to read, short of a utility-class wall. */
@@ -230,7 +230,7 @@ export function pickBoxes(picks: PickedElement[]) {
 
 function describe(el: Element): PickedElement {
   const tag = el.tagName.toLowerCase();
-  const role = oneLine(el.getAttribute("role") ?? "");
+  const role = fitRole(oneLine(el.getAttribute("role") ?? ""));
   const label = shorten(
     oneLine(el.getAttribute("aria-label") ?? "") ||
       oneLine(el.getAttribute("data-testid") ?? "") ||
@@ -242,7 +242,7 @@ function describe(el: Element): PickedElement {
     // The core accepts lowercase letters, digits and `-`; an SVG or
     // namespaced tag can have others.
     tag: /^[a-z0-9-]+$/.test(tag) ? tag : "element",
-    role: role || undefined,
+    role,
     label: label || undefined,
   };
 }
@@ -260,21 +260,33 @@ function selectorFor(el: Element): string {
       return false;
     }
   };
+  /** Every ancestor as `tag:nth-of-type(n)`: unique by construction. */
+  const nthPath = () => {
+    const path: string[] = [];
+    for (let c: Element | null = el; c; c = c.parentElement) {
+      const parent: Element | null = c.parentElement;
+      const tag = c.tagName.toLowerCase();
+      const same = parent ? Array.from(parent.children).filter((s) => s.tagName === c.tagName) : [];
+      path.unshift(same.length > 1 ? `${tag}:nth-of-type(${same.indexOf(c) + 1})` : tag);
+    }
+    return path;
+  };
+  const fit = (candidate: string[]) => fitSelector(candidate, unique, nthPath);
   const testId = el.getAttribute("data-testid");
   if (testId) {
-    const s = `[data-testid="${CSS.escape(testId)}"]`;
+    const s = `[data-testid="${escapeIdent(testId)}"]`;
     if (unique(s)) return s;
   }
   const segments: string[] = [];
   let current: Element | null = el;
   for (let depth = 0; current && depth < MAX_SELECTOR_DEPTH; depth++) {
     if (current.id) {
-      const candidate = [`#${CSS.escape(current.id)}`, ...segments].join(" > ");
-      if (unique(candidate)) return fit(candidate);
+      const candidate = [`#${escapeIdent(current.id)}`, ...segments];
+      if (unique(candidate.join(" > "))) return fit(candidate);
     }
     let seg = current.tagName.toLowerCase();
     const classes = Array.from(current.classList).slice(0, MAX_CLASSES);
-    if (classes.length > 0) seg += classes.map((c) => `.${CSS.escape(c)}`).join("");
+    if (classes.length > 0) seg += classes.map((c) => `.${escapeIdent(c)}`).join("");
     const parent: Element | null = current.parentElement;
     if (parent) {
       const tag = current.tagName;
@@ -282,20 +294,10 @@ function selectorFor(el: Element): string {
       if (siblings.length > 1) seg += `:nth-of-type(${siblings.indexOf(current) + 1})`;
     }
     segments.unshift(seg);
-    const candidate = segments.join(" > ");
-    if (unique(candidate)) return fit(candidate);
+    if (unique(segments.join(" > "))) return fit(segments);
     current = parent;
   }
-  return fit(segments.join(" > "));
-}
-
-/** Drops leading segments until the selector fits the core's limit. */
-function fit(selector: string): string {
-  const parts = selector.split(" > ");
-  while (parts.length > 1 && Array.from(parts.join(" > ")).length > MAX_SELECTOR_CHARS) {
-    parts.shift();
-  }
-  return Array.from(parts.join(" > ")).slice(0, MAX_SELECTOR_CHARS).join("");
+  return fit(segments);
 }
 
 /** `tag#id.class`, for the hover label. */
