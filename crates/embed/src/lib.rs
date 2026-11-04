@@ -138,13 +138,7 @@ fn issue_target(o: &JsValue) -> Result<IssueTarget, JsError> {
             .unwrap_or_default()
     };
     let repo = string("repo");
-    let parts: Vec<&str> = repo.split('/').collect();
-    let valid = |p: &str| {
-        !p.is_empty()
-            && p.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    };
-    if parts.len() != 2 || !parts.iter().all(|p| valid(p)) {
+    if !issue::valid_repo(&repo) {
         return Err(JsError::new("issue.repo must be \"owner/name\""));
     }
     let labels = Reflect::get(o, &"labels".into())

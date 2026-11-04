@@ -157,7 +157,9 @@ export class Paste2PromptOverlay extends Base {
       }
       this.#launcher.setAttribute("aria-busy", "true");
       // The page address without the query string, which often carries
-      // tokens; the hash stays, since hash-routed apps keep the route there.
+      // tokens. The hash stays, since hash-routed apps keep the route there;
+      // the Open issue URL drops it unless it is a `#/…` route, because an
+      // OAuth redirect puts credentials in the hash.
       this.#pageAddress = `${location.origin}${location.pathname}${location.hash}`;
       this.#title.textContent = `Annotating ${location.host}${location.pathname}${location.hash}`;
       // The panel is part of this element, which the capture leaves out.
@@ -220,7 +222,9 @@ export class Paste2PromptOverlay extends Base {
    * Open issue: copies the PNG, then opens the pre-filled new-issue page.
    * In that order: a tab opened first takes the focus, and the clipboard
    * refuses a page without it. The copy starts in the click itself (Safari
-   * refuses one that starts after an await).
+   * refuses one that starts after an await). The tab therefore opens after an
+   * await, so a popup blocker may stop it; the bar then shows the same URL as
+   * a link (and does the same if the copy fails), so nothing is lost.
    */
   #openIssue(): void {
     const editor = this.#editor;
