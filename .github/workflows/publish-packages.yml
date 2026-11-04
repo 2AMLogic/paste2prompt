@@ -19,11 +19,19 @@ on:
       - "Cargo.lock"
       - "package-lock.json"
       - ".github/workflows/publish-packages.yml"
+  # Build and check the packages on every PR, so a change that breaks
+  # packaging fails before the merge. No paths filter (ci-principles rules 3
+  # and 6): the check reports on every PR. Only the read-only build job runs
+  # here; publish stays main-only.
+  pull_request:
   workflow_dispatch:
 
+# Publishes (push, dispatch) share one group and never cancel, so they
+# serialise. A PR gets its own group per ref: a newer push supersedes its older
+# run, and a PR run neither blocks nor is blocked by a publish.
 concurrency:
-  group: publish-packages
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('publish-packages-pr-{0}', github.ref) || 'publish-packages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -42,7 +50,6 @@ jobs:
   # token and no git credentials on disk. The publish job never runs it.
   build:
     name: Build the packages
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
