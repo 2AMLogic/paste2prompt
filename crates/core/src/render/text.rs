@@ -31,7 +31,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use harfrust::{Direction, Script, ShapePlan, ShaperData, UnicodeBuffer};
+use harfrust::{Buffer, Direction, Font, Script, ShapeOptions, ShapePlan, ShaperFont, shape};
 use read_fonts::tables::cmap::CmapSubtable;
 use read_fonts::tables::glyf::{Anchor, CompositeGlyphFlags, Glyf, Glyph as GlyfGlyph};
 use read_fonts::tables::loca::Loca;
@@ -190,10 +190,10 @@ impl Visual {
 
 /// One embedded face: its tables, shaping data and line metrics.
 struct Face {
-    font: FontRef<'static>,
-    shaper: ShaperData,
+    /// The face as harfrust's shaping model, which caches its layout data.
+    shaping: Font,
     /// Shape plans by script, built on first use.
-    plans: Vec<(Script, ShapePlan)>,
+    plans: Vec<(Option<Script>, ShapePlan)>,
     cmap: Option<CmapSubtable<'static>>,
     loca: Option<Loca<'static>>,
     glyf: Option<Glyf<'static>>,
@@ -226,7 +226,7 @@ impl Face {
             _ => (0, 0),
         };
         Self {
-            shaper: ShaperData::new(&font),
+            shaping: Font::new(data, 0).expect("the embedded Inter subset parses"),
             plans: Vec::new(),
             cmap: font
                 .cmap()
@@ -238,7 +238,6 @@ impl Face {
             units_per_em,
             ascent: f32::from(ascent) / units_per_em,
             descent: -f32::from(descent) / units_per_em,
-            font,
         }
     }
 
@@ -260,7 +259,7 @@ impl Face {
         out: &mut Vec<Shaped>,
     ) -> Vec<usize> {
         let run = &line[range.clone()];
-        let mut buffer = UnicodeBuffer::new();
+        let mut buffer = Buffer::new();
         buffer.set_direction(Direction::LeftToRight);
         if run.contains('\t') {
             // Tabs are shaped as spaces and widened afterwards.
@@ -270,26 +269,27 @@ impl Face {
         }
         buffer.guess_segment_properties();
         let script = buffer.script();
-        let shaper = self.shaper.shaper(&self.font).build();
+        let font = ShaperFont::new(&self.shaping);
         let plan = match self.plans.iter().position(|(s, _)| *s == script) {
             Some(i) => &self.plans[i].1,
             None => {
                 let plan = ShapePlan::new(
-                    &shaper,
+                    &self.shaping,
                     buffer.direction(),
-                    Some(script),
-                    buffer.language().as_ref(),
+                    script,
+                    buffer.language(),
                     &[],
                 );
                 self.plans.push((script, plan));
                 &self.plans[self.plans.len() - 1].1
             }
         };
-        let shaped = shaper.shape_with_plan(plan, buffer, &[]);
+        let shaped = shape(&font, &mut buffer, ShapeOptions::new().plan(Some(plan)));
+        debug_assert!(shaped.is_ok(), "shaping failed: {shaped:?}");
         let upem = self.units_per_em;
         let first = out.len();
         let mut missing = Vec::new();
-        for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+        for (info, pos) in buffer.glyph_infos().iter().zip(buffer.glyph_positions()) {
             let start = range.start + info.cluster as usize;
             if info.glyph_id == 0 {
                 missing.push(start);
@@ -346,7 +346,7 @@ impl Face {
                 let base = points.len();
                 for c in composite.components() {
                     let start = points.len();
-                    self.outline(c.glyph.into(), depth + 1, points, ends);
+                    self.outline(c.glyph, depth + 1, points, ends);
                     let t = c.transform;
                     let (xx, yx, xy, yy) =
                         (t.xx.to_f32(), t.yx.to_f32(), t.xy.to_f32(), t.yy.to_f32());
