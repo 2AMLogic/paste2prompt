@@ -738,7 +738,13 @@
     ".loom/scripts/warn-operator-gated.sh",
     ".loom/scripts/warn-out-of-set-deps.sh",
     ".loom/scripts/worktree-return.sh",
-    ".loom/scripts/worktree.sh"
+    ".loom/scripts/worktree.sh",
+    ".agents/skills/loom-builder/SKILL.md",
+    ".agents/skills/loom-curator/SKILL.md",
+    ".agents/skills/loom-doctor/SKILL.md",
+    ".loom/scripts/lib/repo-root.sh",
+    ".loom/scripts/tests/lib/assert.sh",
+    ".loom/scripts/tests/lib/post-merge-cleanup-harness.sh"
   ],
   "last_resync": "2026-11-04",
   "requires_daemon": "0.19.1146"
