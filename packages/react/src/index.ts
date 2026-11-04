@@ -37,8 +37,11 @@ export interface Paste2PromptProps {
 export interface Paste2PromptHandle {
   /** Captures the viewport and opens the editor with it. */
   open(): Promise<void>;
-  /** Closes the editor, asking first when there are marks to lose. */
-  close(): void;
+  /**
+   * Closes the editor, asking first when there are marks to lose. With
+   * `force`, closes without asking and discards the marks.
+   */
+  close(force?: boolean): void;
   /** Whether the editor is showing. */
   readonly isOpen: boolean;
 }
@@ -67,7 +70,7 @@ export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
       ref,
       () => ({
         open: () => el.current?.open() ?? Promise.resolve(),
-        close: () => el.current?.close(),
+        close: (force?: boolean) => el.current?.close(force),
         get isOpen() {
           return el.current?.isOpen ?? false;
         },

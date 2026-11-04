@@ -43,6 +43,10 @@ const p2p = useRef<Paste2PromptHandle>(null);
 | `issueContext` | | extra lines for its body, e.g. a build version |
 | `onOpen`, `onClose` | | called once the editor shows / is gone |
 
+The ref's `close(force?)` asks before discarding marks; `close(true)` closes
+without asking. Only one overlay per page can be open: opening a second while
+the first is picking, capturing or showing its editor does nothing.
+
 It wraps the `<paste2prompt-overlay>` web component from
 [`@2amlogic/paste2prompt-element`](../element/README.md), which also works without
 React. Safe to import during server-side rendering; the element registers on
