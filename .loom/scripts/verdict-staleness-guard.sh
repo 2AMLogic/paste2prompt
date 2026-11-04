@@ -178,7 +178,7 @@
 # mutation inline here in `gh api graphql` plus two comment bodies; review
 # rejected it (PR #8990) as exactly the new portable shell
 # `.loom/docs/shell-language-policy.md` forbids — new executable logic is a
-# loom-daemon subcommand — and the shell-budget ratchet refused the PR outright.
+# loom-daemon subcommand.
 # Do NOT reintroduce an inline mutation "as a fallback for hosts without
 # loom-daemon": that duplication is the thing that was rejected. A host that
 # cannot resolve the binary gets AUTO_MERGE_DISARMED=0 and a named failure in
@@ -521,10 +521,8 @@ MARKER_LINES="$(jq -r --arg t "$MARKER_TEST" --arg c "$MARKER_CAPTURE" '
 # Newest marker wins (the lines are oldest-first). The `-n "$MARKER_LINES"`
 # guard this used to carry was redundant — `tail -n 1` of the empty string is an
 # empty line and `cut -f2` of an empty line is empty, so MARKER_SHA comes out ""
-# either way, which is the value the UNVERIFIABLE branch below keys on. Dropping
-# it pays for the three lines the #8900 disarm delegation adds above, per option
-# 2 of the shell-budget gate's own remedies ("remove portable shell elsewhere in
-# the same change to pay for it"); cases (g)/(h)/(i) cover the no-marker path.
+# either way, which is the value the UNVERIFIABLE branch below keys on.
+# Cases (g)/(h)/(i) cover the no-marker path.
 MARKER_SHA="$(tail -n 1 <<<"$MARKER_LINES" | cut -f2)"
 
 # #9258: an APPROVAL with no trusted marker is STALE, not UNVERIFIABLE — never
@@ -603,7 +601,17 @@ FRESH_REASON=""
 if [[ -n "$MARKER_SHA" && "${HEAD_SHA:0:${#MARKER_SHA}}" == "$MARKER_SHA" ]]; then
   FRESH_REASON="verdict $VERDICT_LABEL was rendered against the current head SHA"
 elif [[ -n "$MARKER_SHA" ]]; then
-  EQUIV_KIND="$("${LOOM_DAEMON_BIN:-loom-daemon}" forge verdict-equivalent "$PR" "$MARKER_SHA" "$HEAD_SHA" 2>"$GH_STDERR" | sed -n 's/^EQUIVALENCE_KIND=//p')"
+  # #13150: name the repo when one is known (LOOM_REPO, else the vetted write repo) so the
+  # answer does not depend on cwd. A daemon predating `--repo` (#13146) rejects the flag with
+  # nothing on stdout; retry once without it so that degrades to the old cwd resolution, not STALE.
+  EQUIV_REPO="${LOOM_REPO:-$WRITE_REPO}"
+  EQUIV_KIND=""
+  if [[ -n "$EQUIV_REPO" ]]; then
+    EQUIV_KIND="$("${LOOM_DAEMON_BIN:-loom-daemon}" forge verdict-equivalent --repo "$EQUIV_REPO" "$PR" "$MARKER_SHA" "$HEAD_SHA" 2>"$GH_STDERR" | sed -n 's/^EQUIVALENCE_KIND=//p')"
+  fi
+  if [[ -z "$EQUIV_KIND" ]] && { [[ -z "$EQUIV_REPO" ]] || grep -q -- '--repo' "$GH_STDERR" 2>/dev/null; }; then
+    EQUIV_KIND="$("${LOOM_DAEMON_BIN:-loom-daemon}" forge verdict-equivalent "$PR" "$MARKER_SHA" "$HEAD_SHA" 2>"$GH_STDERR" | sed -n 's/^EQUIVALENCE_KIND=//p')"
+  fi
   EQUIV_WHY="$(sed -n 's/.* Why: //p' "$GH_STDERR" | head -n 1)"; if [[ -n "$EQUIV_KIND" ]]; then
     FRESH_REASON="verdict $VERDICT_LABEL was rendered against $MARKER_SHA and head is now $HEAD_SHA, but the change this PR makes is unchanged across the move (equivalence kind: $EQUIV_KIND) — so the verdict still describes it (#9576, #9416). CI still re-runs against $HEAD_SHA; only the review carries over."
   fi
@@ -633,8 +641,7 @@ if [[ "$CLEAR" -eq 1 ]]; then
   # The binary is probed through ${LOOM_DAEMON_BIN:-loom-daemon}, the first two
   # tiers of lib/locate-daemon-bin.sh's own precedence (explicit override, then
   # $PATH). The full resolver is NOT sourced here on purpose: it would add more
-  # portable shell to this `contract`-category script than the whole delegation
-  # does, which the shell-budget ratchet refuses.
+  # shell to this script than the whole delegation does.
   #
   # stderr is deliberately NOT redirected — a failed disarm must reach the
   # caller's stderr, not a temp file nobody reads. An unresolvable binary or a

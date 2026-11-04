@@ -35,7 +35,6 @@ scripts/__pycache__/
 .loom/claims/
 .loom/locks/
 .loom/signals/
-.loom/sweep-dispatch-tap/
 .loom/status/
 .loom/retry-state/
 .loom/exit-codes/
@@ -86,7 +85,7 @@ scripts/__pycache__/
 .loom/gh-config-by-owner/
 .loom/gh-config-by-owner.*/
 .loom/gh-config-by-owner-*/
-.loom-local/
+/.loom-local/
 # <<< loom-managed <<<
 
 # Repo Skills machine-local install metadata (absolute source path + timestamp)
