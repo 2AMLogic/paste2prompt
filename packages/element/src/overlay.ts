@@ -22,6 +22,12 @@ const Base: typeof HTMLElement =
 
 let sheet: CSSStyleSheet | undefined;
 
+/**
+ * The overlay that is picking, capturing or showing its editor. The embed
+ * keeps one editor root per page, so a second overlay must not open over it.
+ */
+let active: Paste2PromptOverlay | undefined;
+
 function styles(): CSSStyleSheet {
   if (!sheet) {
     sheet = new CSSStyleSheet();
@@ -64,6 +70,7 @@ export class Paste2PromptOverlay extends Base {
   #title: HTMLElement;
   #notice: HTMLElement;
   #issueButton: HTMLButtonElement;
+  #closeButton: HTMLButtonElement;
   /** The captured page's address, for the issue body. */
   #pageAddress = "";
   #page: HTMLElement;
@@ -104,7 +111,8 @@ export class Paste2PromptOverlay extends Base {
     this.#issueButton.addEventListener("click", () => this.#openIssue());
     this.#page = $(".p2p-page");
     this.#launcher.addEventListener("click", () => void this.open());
-    $("button.close").addEventListener("click", () => this.close());
+    this.#closeButton = $("button.close");
+    this.#closeButton.addEventListener("click", () => this.close());
   }
 
   /** Whether the editor is showing. */
@@ -115,10 +123,12 @@ export class Paste2PromptOverlay extends Base {
   /**
    * Lets the user pick elements (unless `no-picker` is set), then captures
    * the viewport and opens the editor with it. Does nothing if the editor
-   * is already open or opening.
+   * is already open or opening, or if another overlay on the page is.
    */
   async open(): Promise<void> {
     if (this.#editor || this.#busy) return;
+    if (active && active !== this) return;
+    active = this;
     const attempt = ++this.#attempt;
     const stale = () => attempt !== this.#attempt;
     this.#busy = true;
@@ -137,7 +147,12 @@ export class Paste2PromptOverlay extends Base {
         const result = await this.#picking.done;
         this.#picking = undefined;
         this.#launcher.hidden = false;
-        if (stale() || result === null) return;
+        if (stale()) return;
+        if (result === null) {
+          // Cancelled: nothing is open, so let any overlay open.
+          if (active === this) active = undefined;
+          return;
+        }
         picked = result;
       }
       this.#launcher.setAttribute("aria-busy", "true");
@@ -148,6 +163,9 @@ export class Paste2PromptOverlay extends Base {
       // The panel is part of this element, which the capture leaves out.
       this.#status("Capturing the page…");
       this.#panel.hidden = false;
+      // The dialog is modal: move focus into it. Close returns it to the
+      // launcher.
+      this.#closeButton.focus();
       // Measured now, against the viewport the capture is about to take.
       const picks = pickBoxes(picked);
       let image: Blob;
@@ -287,6 +305,7 @@ export class Paste2PromptOverlay extends Base {
     this.#launcher.hidden = false;
     this.#idle();
     this.#editor = undefined;
+    if (active === this) active = undefined;
     editor?.close();
     this.#page.replaceChildren();
     this.#notice.replaceChildren();
