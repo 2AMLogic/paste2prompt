@@ -325,6 +325,9 @@ impl TryFrom<DocumentRepr> for Document {
         if r.next_id > MAX_NEXT_ID {
             return Err(DocumentError::BadNextId(r.next_id));
         }
+        if r.version < 3 && r.edits.iter().any(|e| e.element().is_some()) {
+            return Err(DocumentError::ElementBeforeV3(r.version));
+        }
         let mut seen = std::collections::HashSet::new();
         for e in &r.edits {
             if e.id.0 >= r.next_id || !seen.insert(e.id) {
@@ -495,6 +498,8 @@ pub enum DocumentError {
     BadEditId(EditId),
     /// `next_id` is above 2^53, the largest id counter a document may hold.
     BadNextId(u64),
+    /// An edit has an `element`, which only version 3 and later documents have.
+    ElementBeforeV3(u32),
 }
 
 impl fmt::Display for DocumentError {
@@ -505,6 +510,9 @@ impl fmt::Display for DocumentError {
             Self::DuplicateName(n) => write!(f, "two regions are named {n:?}"),
             Self::BadEditId(id) => write!(f, "duplicate or out-of-range edit id {id}"),
             Self::BadNextId(n) => write!(f, "next_id {n} is above the maximum 2^53"),
+            Self::ElementBeforeV3(v) => {
+                write!(f, "a version {v} document can't have picked elements")
+            }
         }
     }
 }
@@ -780,6 +788,21 @@ mod tests {
         let d = Document::from_json(&v2).unwrap();
         assert!(d.edits().iter().all(|e| e.element().is_none()));
         assert_eq!(d.edits()[1].name(), Some("the \"logo\" ünï"));
+    }
+
+    #[test]
+    fn elements_are_rejected_before_v3() {
+        for v in [1, 2] {
+            let json =
+                sample()
+                    .to_json()
+                    .replacen(r#""version":3"#, &format!(r#""version":{v}"#), 1);
+            assert!(json.contains(r#""element":{"selector""#));
+            assert_eq!(
+                Document::from_json(&json),
+                Err(DocumentError::ElementBeforeV3(v))
+            );
+        }
     }
 
     #[test]

@@ -49,6 +49,9 @@ pub struct ImageInput {
     drag_depth: StoredValue<u32>,
     /// Bumped per load, so a slow decode can't overwrite a newer image.
     generation: StoredValue<u64>,
+    /// Run when a load's decode fails, so state staged for that image (the
+    /// embed's picked elements) doesn't carry over to the next one.
+    on_failed: StoredValue<Option<Callback<()>>>,
 }
 
 impl ImageInput {
@@ -61,7 +64,13 @@ impl ImageInput {
             dragging: RwSignal::new(false),
             drag_depth: StoredValue::new(0),
             generation: StoredValue::new(0),
+            on_failed: StoredValue::new(None),
         }
+    }
+
+    /// Sets what runs when a load fails to decode.
+    pub fn on_load_failed(&self, f: impl Fn() + Send + Sync + 'static) {
+        self.on_failed.set_value(Some(Callback::new(move |()| f())));
     }
 
     /// Open the browser's file picker. Must run inside a user gesture
@@ -97,7 +106,12 @@ impl ImageInput {
                     this.store.set(img);
                     this.notice.set(notice);
                 }
-                Err(err) => this.notice.set(Some(err.message())),
+                Err(err) => {
+                    if let Some(cb) = this.on_failed.get_value() {
+                        cb.run(());
+                    }
+                    this.notice.set(Some(err.message()));
+                }
             }
         });
     }
