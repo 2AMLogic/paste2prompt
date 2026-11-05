@@ -1,7 +1,12 @@
 # paste2prompt embed — design draft
 
-Status: proposal (2026-10-17). Nothing here is built yet. Open questions are
-listed at the end and block the phases that depend on them.
+Status (2026-11-05): phases 1, 2 and 5 are built; phase 4 is half built (Open
+issue yes, `onSubmit` no); phase 3 (the caption extension) is not started;
+phase 6 (dogfooding) is not tracked here. Each phase below says what built it.
+Open questions are listed at the end and block the phases that depend on them.
+This draft began as a proposal on 2026-10-17; sections that describe design
+choices (Architecture, Caption format extension) still read as design, and the
+notes marked **Built** or **Not built** say where the code differs.
 
 ## Why
 
@@ -34,11 +39,13 @@ embed outputs a PNG that any chat can read, with the text facts drawn into it.
 ## Flow
 
 1. The host mounts the overlay. A launcher button floats in a corner (position
-   configurable; hidden with a hotkey or a prop).
+   configurable through the `position` attribute; hidden with `no-launcher`.
+   **Not built:** a hotkey.)
 2. **Capture.** Click the launcher: the overlay hides itself and captures the
-   visible viewport (or one picked element, cropped).
+   visible viewport. (**Not built:** capturing one picked element, cropped.
+   The capture is always the viewport: `packages/element/src/capture.ts`.)
 3. **Mark.** The editor opens over the page with the capture loaded. Tools:
-   - **Element** (new): hover outlines DOM elements in the live page beneath;
+   - **Element** (built, `packages/element/src/picker.ts`): hover outlines DOM elements in the live page beneath;
      a click adds a rectangle region from the element's bounding box and
      records its identity (below). Picking happens *before* the capture is
      frozen, so the boxes come from the real DOM.
@@ -53,13 +60,22 @@ For a picked element the embed records:
 
 | Field | Source | Notes |
 |---|---|---|
-| `selector` | shortest unique CSS selector, built upward until `querySelectorAll` matches one node (ProPanes' approach) | skips the overlay's own classes |
-| `label` | `aria-label`, else `data-testid`, else trimmed text (≤ 40 chars) | what a human would call it |
-| `role` / `tag` | `role` attribute or tag name | |
-| `component` | React only, dev builds: nearest component display name from the fiber | optional, off in production builds |
+| `selector` | `[data-testid="…"]` if that is unique, else built upward from the element (`#id`, or `tag.class` with `:nth-of-type`) until `querySelectorAll` matches one node (ProPanes' approach); at most 512 characters, longer ones are shortened by dropping leading segments (`packages/element/src/selector.ts`) | the overlay is never picked: it lives in its own shadow root and `picker.ts` ignores events from it |
+| `label` | `aria-label`, else `data-testid`, else trimmed text (≤ 40 chars) | what a human would call it; optional |
+| `role` / `tag` | `role` attribute or tag name; each at most 64 characters | `role` is optional |
+| `component` | React only, dev builds: nearest component display name from the fiber | **Not built.** Not in `crates/core/src/element.rs` or the picker |
 | `rect` | `getBoundingClientRect()` × `devicePixelRatio`, offset by the capture origin | becomes the region |
 
+The core checks every field when it is built and when a document is loaded:
+one line each, no invisible formatting characters
+(`crates/core/src/element.rs`, `MAX_SELECTOR_CHARS`,
+`MAX_ELEMENT_LABEL_CHARS`).
+
 ## Caption format extension
+
+**Not built.** `ElementRef` is stored in the document JSON only; the caption
+does not print it (`crates/core/src/element.rs`, module comment). The lines
+below are the proposal.
 
 Rule 4 applies: this changes the output format, so it must show that it helps
 a model read the image. Proposed lines:
@@ -96,27 +112,33 @@ host app
 ```
 
 - **Packages**
-  - `@paste2prompt/element`: the web component plus the wasm. Works from a
-    `<script>` tag or any framework.
-  - `@paste2prompt/react`: a thin wrapper, `<Paste2Prompt … />` and a
-    `usePaste2Prompt()` hook (`open()`, `close()`, `capture()`).
-- **Reuse the Leptos editor** by mounting it into the shadow root
+  - `@2amlogic/paste2prompt-element` (built, `packages/element`): the web
+    component plus the wasm. Works from a `<script>` tag or any framework.
+  - `@2amlogic/paste2prompt-react` (built, `packages/react`): a thin
+    wrapper, `<Paste2Prompt … />`, with `open()` and `close(force?)` on its
+    ref. **Not built:** the `usePaste2Prompt()` hook and a public `capture()`.
+- **Reuse the Leptos editor** (built: `crates/embed`, `crates/web/src/embed.rs`
+  and `dom.rs`) by mounting it into the shadow root
   (`mount_to` in place of `mount_to_body`), with `style.css` adopted into the
   shadow root. That keeps one editor implementation. The alternative, a
   TypeScript editor over a headless wasm core, means two UIs to keep in step;
   we'd only choose it if Leptos doesn't behave inside a shadow root (global
   key handlers, focus and `document()` lookups need checking).
-- **Lazy load.** The release wasm is roughly 600 KB compressed (approximate;
+- **Lazy load** (built, `packages/element/src/load-wasm.ts`). The release
+  wasm is roughly 580 KB gzipped (`packages/element/README.md`; approximate,
   re-measure with the release build before quoting it). The launcher is a
   few KB; the wasm loads on first open.
 - **Capture**
-  - Default: `html-to-image` (MIT), which re-renders the DOM to a canvas. It
+  - Default (built, `packages/element/src/capture.ts`): `html-to-image`
+    (MIT), which re-renders the DOM to a canvas. It
     needs no permission prompt but isn't pixel-exact: cross-origin images
     without CORS and some CSS effects drop out.
   - Opt-in: `getDisplayMedia`, for real pixels behind a browser prompt.
+    **Not built.**
   - The overlay is always excluded from the capture and from picking.
 - **Mobile.** The launcher works by tap; the element tool uses
-  tap-to-preview, tap-again-to-pick. Copying to the clipboard needs a user
+  tap-to-preview, tap-again-to-pick (`picker.ts` handles touch pointers
+  apart from mouse hover). Copying to the clipboard needs a user
   gesture, so the output step always ends on an explicit button.
 
 ## Outputs
@@ -124,8 +146,8 @@ host app
 | Action | Network? | Notes |
 |---|---|---|
 | Copy PNG / Download / Copy caption | no | as the app does today |
-| **Open GitHub issue** (`repo` prop) | no, it only opens a URL | opens `github.com/<repo>/issues/new?title=…&body=<caption>` in a new tab and copies the PNG to the clipboard; the user pastes it into the issue. The body stays under GitHub's URL length limit (it's cut short with a note if needed). |
-| **`onSubmit` host callback** | the host's choice | receives `{ png: Blob, caption: string, document: <core JSON>, page }`. The embed itself sends nothing. |
+| **Open GitHub issue** (`issue-repo` attribute, `issueRepo` prop). **Built** (PR #89; `crates/embed/src/issue.rs`, `packages/element/src/overlay.ts`) | no, it only opens a URL | opens `github.com/<repo>/issues/new?title=…&body=<caption>` in a new tab and copies the PNG to the clipboard; the user pastes it into the issue. The body stays under GitHub's URL length limit (it's cut short with a note if needed). |
+| **`onSubmit` host callback**. **Not built:** no `onSubmit` in `packages/` or `crates/`; waits on open question 2 | the host's choice | receives `{ png: Blob, caption: string, document: <core JSON>, page }`. The embed itself sends nothing. |
 
 The GitHub REST API has no endpoint for uploading issue attachments, so a
 one-click "file with image" flow needs somewhere to host the image. That
@@ -134,17 +156,28 @@ not to the embed.
 
 ## Phases
 
-0. **Decisions:** the open questions below.
-1. **Shadow-root mount:** make the Leptos editor mount into a given element
-   and accept an image handed over from JS; build `@paste2prompt/element`
-   with the launcher and the capture.
-2. **Element picker** and the region-with-identity data in `crates/core`
-   (stored in the document JSON; not yet printed in the caption).
-3. **Caption extension:** run the evidence comparison above, then print the
-   `Page:` and `element` lines.
-4. **Outputs:** the GitHub issue button and `onSubmit`.
-5. **`@paste2prompt/react`** wrapper and a published npm release.
-6. **Dogfood on dashboard.2amlogic.com.**
+0. **Decisions:** the open questions below. Question 3 is resolved; 1 and the
+   `onSubmit` half of 2 are still open.
+1. **Shadow-root mount: built** (PRs #88, #94; `crates/embed`,
+   `crates/web/src/embed.rs`). The Leptos editor mounts into a given shadow
+   root and takes an image handed over from JS. `@2amlogic/paste2prompt-element`
+   has the launcher and the capture (`packages/element/src/overlay.ts`,
+   `capture.ts`).
+2. **Element picker: built** (PR #94; `packages/element/src/picker.ts`,
+   `crates/core/src/element.rs`). The region-with-identity data is stored in
+   the document JSON; not printed in the caption.
+3. **Caption extension: not started.** Run the evidence comparison above,
+   then print the `Page:` and `element` lines.
+4. **Outputs: partly built.** The GitHub issue button is built (PR #89,
+   `crates/embed/src/issue.rs`). `onSubmit` is not built; it blocks on open
+   question 2.
+5. **`@2amlogic/paste2prompt-react` wrapper: built** (PR #88,
+   `packages/react/src/index.ts`; 0.2.0 in PR #100). **Release: partly
+   built.** `.github/workflows/publish-packages.yml` publishes both packages
+   to GitHub Packages (PR #90) and each `package.json` carries
+   `PolyForm-Noncommercial-1.0.0`. A release to public npm under a decided
+   licence is not built; it blocks on open question 1.
+6. **Dogfood on dashboard.2amlogic.com:** not tracked in this repo.
 
 ## Open questions
 
