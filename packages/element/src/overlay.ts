@@ -2,6 +2,7 @@ import appCss from "../../../crates/web/style.css";
 import chromeCss from "./chrome.css";
 import { captureViewport } from "./capture.js";
 import { type Editor, type IssueOptions, loadEditor } from "./load-wasm.js";
+import { runSubmit, submitEnabled, type SubmitHandler } from "./submit.js";
 import { type PickedElement, type PickSession, pickBoxes, startPicker } from "./picker.js";
 
 /** Where the launcher button floats. */
@@ -51,8 +52,13 @@ function styles(): CSSStyleSheet {
  *   caption, for the user to paste the image into and submit.
  * - `issue-labels`: comma-separated labels for that issue.
  *
+ * - `submit-notice`: text naming where the host sends the output, such as
+ *   "Sends to dashboard.example.com". With the {@link onSubmit} property it
+ *   adds a **Submit** button, with this notice shown before it.
+ *
  * The {@link issueContext} property adds lines to the issue body (a build
- * version, say).
+ * version, say). The {@link onSubmit} property is the host's callback for
+ * Submit.
  *
  * Events (on the element): `paste2prompt-open` once the editor shows,
  * `paste2prompt-close` once it is gone.
@@ -61,7 +67,11 @@ function styles(): CSSStyleSheet {
  * to the clipboard or a download. The one exception (CLAUDE.md rule 1) is
  * Open issue: on that click, the new-issue URL carries the title, labels,
  * page address and caption text to github.com. The image stays on the
- * clipboard until the user pastes it.
+ * clipboard until the user pastes it. The other is Submit (operator,
+ * 2026-11-05): only when the host opts in with both `submit-notice` and
+ * {@link onSubmit}, and only on that click, the embed hands
+ * `{ png, caption, document, page }` to the host's callback. The embed makes
+ * no network call of its own; what the callback does is the host's.
  */
 export class Paste2PromptOverlay extends Base {
   #shadow: ShadowRoot;
@@ -70,6 +80,8 @@ export class Paste2PromptOverlay extends Base {
   #title: HTMLElement;
   #notice: HTMLElement;
   #issueButton: HTMLButtonElement;
+  #submitNotice: HTMLElement;
+  #submitButton: HTMLButtonElement;
   #closeButton: HTMLButtonElement;
   /** The captured page's address, for the issue body. */
   #pageAddress = "";
@@ -84,6 +96,13 @@ export class Paste2PromptOverlay extends Base {
   /** Extra lines for the body of an issue opened from the editor. */
   issueContext = "";
 
+  /**
+   * The host's Submit callback. Called once per click on **Submit**, never
+   * on open, edit or close. The button shows only with this and the
+   * `submit-notice` attribute both set (read when the editor opens).
+   */
+  onSubmit: SubmitHandler | undefined;
+
   constructor() {
     super();
     this.#shadow = this.attachShadow({ mode: "open" });
@@ -97,6 +116,8 @@ export class Paste2PromptOverlay extends Base {
         <div class="bar">
           <span class="title"></span>
           <span class="bar-notice" role="status"></span>
+          <span class="submit-notice" hidden></span>
+          <button type="button" class="submit" hidden>Submit</button>
           <button type="button" class="issue" hidden></button>
           <button type="button" class="close">Close</button>
         </div>
@@ -108,6 +129,9 @@ export class Paste2PromptOverlay extends Base {
     this.#title = $(".title");
     this.#notice = $(".bar-notice");
     this.#issueButton = $("button.issue");
+    this.#submitNotice = $(".submit-notice");
+    this.#submitButton = $("button.submit");
+    this.#submitButton.addEventListener("click", () => void this.#submit());
     this.#issueButton.addEventListener("click", () => this.#openIssue());
     this.#page = $(".p2p-page");
     this.#launcher.addEventListener("click", () => void this.open());
@@ -196,6 +220,11 @@ export class Paste2PromptOverlay extends Base {
       const issue = this.#issue();
       this.#issueButton.hidden = !issue;
       if (issue) this.#issueButton.textContent = `Open issue in ${issue.repo}`;
+      const notice = this.getAttribute("submit-notice")?.trim() ?? "";
+      const submit = submitEnabled(notice, this.onSubmit);
+      this.#submitNotice.textContent = submit ? notice : "";
+      this.#submitNotice.hidden = !submit;
+      this.#submitButton.hidden = !submit;
       this.dispatchEvent(new CustomEvent("paste2prompt-open"));
     } finally {
       if (!stale()) this.#idle();
@@ -256,6 +285,22 @@ export class Paste2PromptOverlay extends Base {
     );
   }
 
+  /** Submit: hands the output to the host's callback, once per click. */
+  async #submit(): Promise<void> {
+    const editor = this.#editor;
+    const handler = this.onSubmit;
+    if (!editor || !handler || this.#submitButton.disabled) return;
+    this.#submitButton.disabled = true;
+    this.#say("Submitting…");
+    try {
+      const error = await runSubmit(handler, editor, this.#pageAddress);
+      // The editor may have closed meanwhile; its bar is cleared then.
+      if (this.#editor === editor) this.#say(error ?? "Submitted.");
+    } finally {
+      this.#submitButton.disabled = false;
+    }
+  }
+
   /** Shows a message in the bar, with a link to the new issue if given. */
   #say(message: string, issueUrl?: string): void {
     const parts: Node[] = [document.createTextNode(message)];
@@ -314,6 +359,8 @@ export class Paste2PromptOverlay extends Base {
     this.#page.replaceChildren();
     this.#notice.replaceChildren();
     this.#issueButton.hidden = true;
+    this.#submitButton.hidden = true;
+    this.#submitNotice.hidden = true;
     this.#panel.hidden = true;
     if (editor) {
       this.dispatchEvent(new CustomEvent("paste2prompt-close"));

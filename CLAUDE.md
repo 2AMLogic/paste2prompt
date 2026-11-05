@@ -26,6 +26,16 @@ to paste into any LLM chat as a visual prompt.
      version; operator, 2026-10-19). The image only goes to the clipboard;
      the user attaches it. Nothing else is sent. This code stays out of `crates/web`, so the standalone site and
      its privacy guard are unchanged.
+   - **Submit exception (operator, 2026-11-05):** the embed may offer a
+     **Submit** button that hands `{ png, caption, document, page }` to a
+     callback the host app supplies (`onSubmit`). Terms: (1) opt-in, the
+     button shows only when the host sets both `submit-notice` and
+     `onSubmit`; (2) the callback fires only on an explicit click, never on
+     open, edit or close; (3) the host's `submit-notice` text naming the
+     destination is shown before the button; (4) the embed adds no network
+     code of its own (no `fetch`, XHR, `sendBeacon` or WebSocket in
+     `crates/embed` or `packages/`), so any upload is the host's code and
+     the host's responsibility; (5) `crates/web` is untouched.
 2. **Public repo.** Everything pushed here is world-readable at once. The
    invention firewall applies (workspace `CLAUDE.md` rule 3): never work here
    in a session that holds `notebook` content.

@@ -103,8 +103,14 @@
   color: var(--p2p-accent);
 }
 
-.bar .issue {
+.bar .issue,
+.bar .submit {
   font-weight: 600;
+}
+
+.bar .submit-notice {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .bar .title {
