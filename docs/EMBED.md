@@ -156,8 +156,8 @@ not to the embed.
 
 ## Phases
 
-0. **Decisions:** the open questions below. Questions 2 and 3 are resolved; 1 is
-   still open.
+0. **Decisions:** the open questions below. Questions 1, 2 and 3 are all
+   resolved.
 1. **Shadow-root mount: built** (PRs #88, #94; `crates/embed`,
    `crates/web/src/embed.rs`). The Leptos editor mounts into a given shadow
    root and takes an image handed over from JS. `@2amlogic/paste2prompt-element`
@@ -175,17 +175,19 @@ not to the embed.
    `packages/react/src/index.ts`; 0.2.0 in PR #100). **Release: partly
    built.** `.github/workflows/publish-packages.yml` publishes both packages
    to GitHub Packages (PR #90) and each `package.json` carries
-   `PolyForm-Noncommercial-1.0.0`. A release to public npm under a decided
-   licence is not built; it blocks on open question 1.
+   `PolyForm-Noncommercial-1.0.0`. The packages stay PolyForm Noncommercial
+   (open question 1, resolved). A release to public npm is not built, and
+   that ruling does not decide whether to publish there.
 6. **Dogfood on dashboard.2amlogic.com:** not tracked in this repo.
 
 ## Open questions
 
-1. **License of the embed packages.** The repo is PolyForm Noncommercial
-   1.0.0, which forbids commercial host apps. Options: keep that, release the
-   embed packages under MIT/Apache-2.0, or offer commercial licenses
-   separately. Our own dashboard is fine either way; outside adoption isn't.
-   Operator decision, to be recorded in `CLAUDE.md`.
+1. **License of the embed packages.** Resolved: the embed packages
+   (`packages/element`, `packages/react`) stay under PolyForm Noncommercial
+   1.0.0, and commercial licenses are offered separately (operator,
+   2026-11-05, r6-q13; recorded on
+   [#86](https://github.com/2AMLogic/paste2prompt/issues/86#issuecomment-6652864602)
+   and in `CLAUDE.md` rule 3).
 2. **Rule 1 scope.** Two outputs carry user content off the page:
    - **Open GitHub issue** puts the caption text (plus title, labels and page
      address) in a github.com URL. Decided: the operator recorded an embed

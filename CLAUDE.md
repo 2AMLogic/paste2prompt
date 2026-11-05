@@ -42,7 +42,9 @@ to paste into any LLM chat as a visual prompt.
 3. **License is PolyForm Noncommercial 1.0.0.** Every new source file is
    covered by `LICENSE`. Don't add dependencies whose licenses forbid this
    (e.g. anything that would force a copyleft relicense). Prefer MIT, Apache-2.0
-   or similar permissive licenses.
+   or similar permissive licenses. Commercial use is by separate license;
+   terms come from the operator once counsel approves them (operator,
+   2026-11-05; this includes the embed packages).
 4. **The output PNG is the product.** Its layout (annotation markers, numbering,
    caption block) is a format that models have to read reliably. Changes to
    it should say why they help a model read it, ideally with an example.
