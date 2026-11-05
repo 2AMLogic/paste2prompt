@@ -1,7 +1,7 @@
 # paste2prompt embed — design draft
 
-Status (2026-11-05): phases 1, 2 and 5 are built; phase 4 is half built (Open
-issue yes, `onSubmit` no); phase 3 (the caption extension) is not started;
+Status (2026-11-05): phases 1, 2 and 5 are built; phase 4 is built (Open
+issue and `onSubmit`); phase 3 (the caption extension) is not started;
 phase 6 (dogfooding) is not tracked here. Each phase below says what built it.
 Open questions are listed at the end and block the phases that depend on them.
 This draft began as a proposal on 2026-10-17; sections that describe design
@@ -147,7 +147,7 @@ host app
 |---|---|---|
 | Copy PNG / Download / Copy caption | no | as the app does today |
 | **Open GitHub issue** (`issue-repo` attribute, `issueRepo` prop). **Built** (PR #89; `crates/embed/src/issue.rs`, `packages/element/src/overlay.ts`) | no, it only opens a URL | opens `github.com/<repo>/issues/new?title=…&body=<caption>` in a new tab and copies the PNG to the clipboard; the user pastes it into the issue. The body stays under GitHub's URL length limit (it's cut short with a note if needed). |
-| **`onSubmit` host callback**. **Not built:** no `onSubmit` in `packages/` or `crates/`; waits on open question 2 | the host's choice | receives `{ png: Blob, caption: string, document: <core JSON>, page }`. The embed itself sends nothing. |
+| **`onSubmit` host callback** (`onSubmit` property / prop with a `submit-notice`). **Built** (`packages/element/src/overlay.ts`, `submit.ts`) | the host's choice | receives `{ png: Blob, caption: string, document: <core JSON>, page }` once, on an explicit click of **Submit**, which shows only when the host sets both `submit-notice` (shown before the button) and `onSubmit`. The embed itself sends nothing. |
 
 The GitHub REST API has no endpoint for uploading issue attachments, so a
 one-click "file with image" flow needs somewhere to host the image. That
@@ -156,8 +156,8 @@ not to the embed.
 
 ## Phases
 
-0. **Decisions:** the open questions below. Questions 1 and 3 are resolved; the
-   `onSubmit` half of 2 is still open.
+0. **Decisions:** the open questions below. Questions 1, 2 and 3 are all
+   resolved.
 1. **Shadow-root mount: built** (PRs #88, #94; `crates/embed`,
    `crates/web/src/embed.rs`). The Leptos editor mounts into a given shadow
    root and takes an image handed over from JS. `@2amlogic/paste2prompt-element`
@@ -168,9 +168,9 @@ not to the embed.
    the document JSON; not printed in the caption.
 3. **Caption extension: not started.** Run the evidence comparison above,
    then print the `Page:` and `element` lines.
-4. **Outputs: partly built.** The GitHub issue button is built (PR #89,
-   `crates/embed/src/issue.rs`). `onSubmit` is not built; it blocks on open
-   question 2.
+4. **Outputs: built.** The GitHub issue button (PR #89,
+   `crates/embed/src/issue.rs`) and the `onSubmit` Submit button
+   (`packages/element/src/overlay.ts`, `submit.ts`).
 5. **`@2amlogic/paste2prompt-react` wrapper: built** (PR #88,
    `packages/react/src/index.ts`; 0.2.0 in PR #100). **Release: partly
    built.** `.github/workflows/publish-packages.yml` publishes both packages
@@ -194,9 +194,11 @@ not to the embed.
      exception to rule 1 in `CLAUDE.md` on 2026-10-17, which lands with the
      Open issue code (PR #89). That exception covers only this button.
    - **`onSubmit`** hands the user's capture to host code that may upload it.
-     Still open: is "the library makes no network calls; hosts decide" the
-     right reading of rule 1 here? To be recorded in `CLAUDE.md` with the
-     answer.
+     Resolved (operator, 2026-11-05, recorded in `CLAUDE.md` rule 1): the
+     library makes no network calls and the host decides, under five terms:
+     opt-in with a destination notice shown before the button, callback on
+     an explicit click only, no network code in the embed, `crates/web`
+     untouched.
 3. **Porting ProPanes code.** Resolved: ProPanes is MIT-licensed (its
    `LICENSE` landed in tinkerer/propanes `5082b26`, 2026-10-17). Ported code
    keeps an MIT header with the copyright line and permission notice, and

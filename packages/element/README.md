@@ -19,8 +19,9 @@ downloaded. Nothing is sent anywhere, except by Open issue (below).
 - **Attributes:** `position` (`bottom-right`, `bottom-left`, `top-right`,
   `top-left`), `no-launcher` (hide the button; call `open()` yourself),
   `no-picker` (capture straight away, without picking), `issue-repo` and
-  `issue-labels` (below).
-- **Property:** `issueContext`, extra lines for the issue body.
+  `issue-labels` (below), `submit-notice` ([Submit](#submit)).
+- **Properties:** `issueContext`, extra lines for the issue body; `onSubmit`,
+  the host's [Submit](#submit) callback.
 - **Methods:** `open()`, `close(force?)` (asks before discarding marks
   unless `force`), `isOpen`.
 - **Events:** `paste2prompt-open`, `paste2prompt-close`.
@@ -77,6 +78,28 @@ route. If the browser blocks the new tab, the bar shows a link to it instead.
   document.querySelector("paste2prompt-overlay").issueContext = `**Build:** ${BUILD}`;
 </script>
 ```
+
+## Submit
+
+For hosts that take the output themselves (a bug tracker with its own
+backend, say). Set both the `submit-notice` attribute and the `onSubmit`
+property and the top bar shows the notice, then a **Submit** button; with
+either missing, neither shows and nothing can be called.
+
+```html
+<paste2prompt-overlay submit-notice="Sends to dashboard.example.com"></paste2prompt-overlay>
+<script type="module">
+  document.querySelector("paste2prompt-overlay").onSubmit = async ({ png, caption, document, page }) => {
+    // Your upload, your responsibility.
+  };
+</script>
+```
+
+The callback is called once per click on **Submit**, and never on open, edit
+or close, with `{ png: Blob, caption: string, document: object, page: string }`
+(`page` is the captured address without its query string). The embed makes no
+network call itself; make the notice say where your callback sends it. If the
+callback throws or rejects, the bar shows the error.
 
 ## Picking elements
 

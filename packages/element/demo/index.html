@@ -31,13 +31,14 @@
       </table>
       <div class="spacer">Scroll filler</div>
     </main>
-    <paste2prompt-overlay issue-repo="your-org/your-app" issue-labels="bug"></paste2prompt-overlay>
+    <paste2prompt-overlay issue-repo="your-org/your-app" issue-labels="bug" submit-notice="Demo: logs to the console, sends nothing"></paste2prompt-overlay>
     <!-- A second overlay: while the first is open, this one's launcher does nothing. -->
     <paste2prompt-overlay position="bottom-left"></paste2prompt-overlay>
     <script type="module">
       import { defineOverlay } from "../dist/demo.js";
       defineOverlay();
       document.querySelector("paste2prompt-overlay").issueContext = "**Build:** demo";
+      document.querySelector("paste2prompt-overlay").onSubmit = (payload) => console.log("onSubmit", payload);
     </script>
   </body>
 </html>

@@ -1,12 +1,17 @@
 import {
   type LauncherPosition,
+  type SubmitHandler,
   type Paste2PromptOverlay,
   TAG_NAME,
   defineOverlay,
 } from "@2amlogic/paste2prompt-element";
 import { createElement, forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
-export type { LauncherPosition } from "@2amlogic/paste2prompt-element";
+export type {
+  LauncherPosition,
+  SubmitHandler,
+  SubmitPayload,
+} from "@2amlogic/paste2prompt-element";
 
 export interface Paste2PromptProps {
   /** Where the launcher button floats. Default `bottom-right`. */
@@ -27,6 +32,18 @@ export interface Paste2PromptProps {
   issueLabels?: string[];
   /** Extra lines for that issue's body, such as a build version. */
   issueContext?: string;
+  /**
+   * Text naming where your `onSubmit` sends the output, e.g. "Sends to
+   * dashboard.example.com". Shown before the **Submit** button, which
+   * appears only when this and `onSubmit` are both set.
+   */
+  submitNotice?: string;
+  /**
+   * Called with `{ png, caption, document, page }` when the user clicks
+   * **Submit**, and at no other time. The embed sends nothing itself; what
+   * the callback does with the output is up to the host.
+   */
+  onSubmit?: SubmitHandler;
   /** Called once the editor shows. */
   onOpen?: () => void;
   /** Called once the editor is gone. */
@@ -59,7 +76,7 @@ export interface Paste2PromptHandle {
  */
 export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
   function Paste2Prompt(
-    { position, launcher = true, issueRepo, issueLabels, issueContext, onOpen, onClose },
+    { position, launcher = true, issueRepo, issueLabels, issueContext, submitNotice, onSubmit, onOpen, onClose },
     ref,
   ) {
     const el = useRef<Paste2PromptOverlay>(null);
@@ -83,6 +100,10 @@ export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
     }, [issueContext]);
 
     useEffect(() => {
+      if (el.current) el.current.onSubmit = onSubmit;
+    }, [onSubmit]);
+
+    useEffect(() => {
       const node = el.current;
       if (!node) return;
       const opened = () => onOpen?.();
@@ -103,6 +124,7 @@ export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
       "no-launcher": launcher ? undefined : "",
       "issue-repo": issueRepo,
       "issue-labels": issueLabels?.join(","),
+      "submit-notice": submitNotice,
     });
   },
 );

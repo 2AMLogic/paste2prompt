@@ -25,6 +25,14 @@ For bug reports straight into your own repository (there is no default; without
 <Paste2Prompt issueRepo="your-org/your-app" issueLabels={["bug"]} issueContext={`**Build:** ${BUILD}`} />
 ```
 
+To take the output yourself, pass both `submitNotice` (shown before the
+button, so say where it goes) and `onSubmit`. The button shows only with both,
+and the callback runs once per click with `{ png, caption, document, page }`:
+
+```tsx
+<Paste2Prompt submitNotice="Sends to dashboard.example.com" onSubmit={async (p) => upload(p)} />
+```
+
 Without the floating button, open the editor from your own control:
 
 ```tsx
@@ -41,6 +49,8 @@ const p2p = useRef<Paste2PromptHandle>(null);
 | `issueRepo` | | `owner/name`: adds **Open issue**, which copies the PNG and opens a pre-filled new-issue page there |
 | `issueLabels` | | labels for that issue |
 | `issueContext` | | extra lines for its body, e.g. a build version |
+| `submitNotice` | | text naming where `onSubmit` sends the output; shown before **Submit** |
+| `onSubmit` | | called with `{ png, caption, document, page }` on a click of **Submit**; the button needs this and `submitNotice` |
 | `onOpen`, `onClose` | | called once the editor shows / is gone |
 
 The ref's `close(force?)` asks before discarding marks; `close(true)` closes
