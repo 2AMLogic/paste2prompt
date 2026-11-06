@@ -99,7 +99,9 @@ The callback is called once per click on **Submit**, and never on open, edit
 or close, with `{ png: Blob, caption: string, document: object, page: string }`
 (`page` is the captured address without its query string). The embed makes no
 network call itself; make the notice say where your callback sends it. If the
-callback throws or rejects, the bar shows the error.
+callback throws or rejects, the bar shows the error. `npm test` enforces this:
+`test/no-network.test.ts` fails on any network API in the embed's own sources
+(dependencies are not scanned).
 
 ## Picking elements
 
