@@ -95,3 +95,6 @@ scripts/__pycache__/
 
 # JS packages (packages/*): build output, including the wasm-pack output
 packages/*/dist/
+
+# Repo Skills Codex-side machine-local install metadata (never committed)
+.agents/skills/repo/.install-local.json
