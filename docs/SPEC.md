@@ -83,8 +83,11 @@ or press `N` to focus it for the selected edit. A new label starts as
   logo" is never ambiguous. A duplicate is rejected with a message under the
   name field.
 - Typing a name is one undo step, like typing a hint.
-- The JSON document format is version 2 (each edit gains `name`); version 1
-  documents, which have no names, still load.
+- The JSON document format is version 3. Version 2 added `name` to each edit;
+  version 3 added element identity (what DOM element a region was picked
+  from, see [`EMBED.md`](EMBED.md)). `Document::from_json` reads versions 1
+  to 3: version 1 documents have no names, and a document older than
+  version 3 that carries an element is rejected.
 
 All coordinates are stored and printed as **% of image width and height**,
 so they survive chat apps downscaling the image. Pixel values can be shown
@@ -241,10 +244,12 @@ it doesn't toggle the sheet. The sheet shows ⌘ on macOS and Ctrl elsewhere.
   and accessible buttons. The canvas draws the image, marks and ghosts. The
   export doesn't come from the canvas: the core renders it.
 - **Rendering:** draw the export with `tiny-skia` in the core, so the output
-  is identical in every browser. Text uses `cosmic-text` with one bundled
-  open font (Inter or Noto Sans).
+  is identical in every browser. Text is shaped with `harfrust`, glyph outlines
+  come from `read-fonts`, and `unicode-linebreak` finds the line breaks. The
+  one bundled font is an Inter subset (Regular and Bold, in
+  `crates/core/fonts/`).
 - **Build:** `trunk` produces a static `dist/`. Hosting is a static site
-  (Cloudflare Pages / Workers assets) at paste2prompt.com.
+  served as Workers static assets (`wrangler.jsonc`) at paste2prompt.com.
 - **Privacy:** no network requests after the page loads. CI checks this
   (no `fetch` / `XMLHttpRequest` in the bundle outside the asset loader).
   That bundle scan can't see scripts injected at the edge, so edge-injected
