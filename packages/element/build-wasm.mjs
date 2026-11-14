@@ -5,9 +5,10 @@
 // must be binaryen 123 or later (the version crates/web/Trunk.toml pins):
 // older ones can't parse what current rustc emits. CI downloads 123.
 import { execFileSync } from "node:child_process";
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 
 const MIN_BINARYEN = 123;
 const out = "dist/wasm";
@@ -25,6 +26,10 @@ rmSync(join(out, ".gitignore"), { force: true });
 const wasmOpt = findWasmOpt();
 execFileSync(wasmOpt, [wasm, "-Os", "-o", `${wasm}.opt`], { stdio: "inherit" });
 renameSync(`${wasm}.opt`, wasm);
+
+// Size of what a host page downloads: the optimised file, raw and gzip -9.
+const bytes = readFileSync(wasm);
+console.log(`build-wasm: ${wasm} ${bytes.length} bytes raw, ${gzipSync(bytes, { level: 9 }).length} bytes gzip -9`);
 
 function findWasmOpt() {
   const trunkCache = [
