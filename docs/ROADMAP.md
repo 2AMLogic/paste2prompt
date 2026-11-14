@@ -51,7 +51,8 @@ own sources, `packages/element/test/no-network.test.ts`).
 
 ## Now
 
-Each item can start today and fits one pull request. None has an issue yet.
+Each item can start today and fits one pull request. All three are filed as
+`loom:triage` issues, in the order below: #130, #131, #132.
 
 1. **Bring `SPEC.md` in line with the code.** Three statements are stale:
    §Architecture says text uses `cosmic-text` (removed in #43); §Operations
