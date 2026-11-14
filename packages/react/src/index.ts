@@ -39,6 +39,14 @@ export interface Paste2PromptProps {
    */
   submitNotice?: string;
   /**
+   * A keyboard chord that opens the overlay, e.g. `"Alt+Shift+P"`. No
+   * default: without it no key listener is installed. Needs at least one
+   * modifier; an unparsable value is ignored with a console warning. The
+   * chord does nothing while the editor is open, and is ignored while
+   * focus is in a text field of the page.
+   */
+  hotkey?: string;
+  /**
    * Called with `{ png, caption, document, page }` when the user clicks
    * **Submit**, and at no other time. The embed sends nothing itself; what
    * the callback does with the output is up to the host.
@@ -76,7 +84,7 @@ export interface Paste2PromptHandle {
  */
 export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
   function Paste2Prompt(
-    { position, launcher = true, issueRepo, issueLabels, issueContext, submitNotice, onSubmit, onOpen, onClose },
+    { position, launcher = true, issueRepo, issueLabels, issueContext, submitNotice, hotkey, onSubmit, onOpen, onClose },
     ref,
   ) {
     const el = useRef<Paste2PromptOverlay>(null);
@@ -125,6 +133,7 @@ export const Paste2Prompt = forwardRef<Paste2PromptHandle, Paste2PromptProps>(
       "issue-repo": issueRepo,
       "issue-labels": issueLabels?.join(","),
       "submit-notice": submitNotice,
+      hotkey,
     });
   },
 );
