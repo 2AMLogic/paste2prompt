@@ -40,7 +40,10 @@ embed outputs a PNG that any chat can read, with the text facts drawn into it.
 
 1. The host mounts the overlay. A launcher button floats in a corner (position
    configurable through the `position` attribute; hidden with `no-launcher`.
-   **Not built:** a hotkey.)
+   A `hotkey` attribute (e.g. `hotkey="Alt+Shift+P"`) adds a keyboard chord
+   that opens the overlay like a launcher click — opt-in, at least one
+   modifier, ignored in text fields and while open;
+   `packages/element/src/hotkey.ts`.)
 2. **Capture.** Click the launcher: the overlay hides itself and captures the
    visible viewport. (**Not built:** capturing one picked element, cropped.
    The capture is always the viewport: `packages/element/src/capture.ts`.)

@@ -19,7 +19,8 @@ downloaded. Nothing is sent anywhere, except by Open issue (below).
 - **Attributes:** `position` (`bottom-right`, `bottom-left`, `top-right`,
   `top-left`), `no-launcher` (hide the button; call `open()` yourself),
   `no-picker` (capture straight away, without picking), `issue-repo` and
-  `issue-labels` (below), `submit-notice` ([Submit](#submit)).
+  `issue-labels` (below), `submit-notice` ([Submit](#submit)), `hotkey`
+  ([Hotkey](#hotkey)).
 - **Properties:** `issueContext`, extra lines for the issue body; `onSubmit`,
   the host's [Submit](#submit) callback.
 - **Methods:** `open()`, `close(force?)` (asks before discarding marks
@@ -105,6 +106,29 @@ network call itself; make the notice say where your callback sends it. If the
 callback throws or rejects, the bar shows the error. `npm test` enforces this:
 `test/no-network.test.ts` fails on any network API in the embed's own sources
 (dependencies are not scanned).
+
+## Hotkey
+
+A keyboard chord that opens the overlay, for hosts that hide the launcher or
+want a second way in:
+
+```html
+<paste2prompt-overlay hotkey="Alt+Shift+P"></paste2prompt-overlay>
+```
+
+The chord does exactly what a click on the launcher does. It is opt-in:
+without the attribute no key listener is installed. One chord per element:
+
+- At least one modifier is required (`Alt`, `Ctrl`/`Control`, `Shift`,
+  `Meta`/`Cmd`/`Command`), then a key (`P`, `1`, `F1`, `Space`, `Enter`, …).
+  Names are case-insensitive.
+- An unparsable value — a bare key, an unknown modifier, an empty string — is
+  ignored with one `console.warn`.
+- The chord does nothing while the editor is already open, and is ignored
+  while focus is in a text field, a `select` or a `contenteditable` element
+  of the page, so typing is never intercepted.
+- Removing the attribute or disconnecting the element removes the listener;
+  changing the attribute re-reads it.
 
 ## Picking elements
 

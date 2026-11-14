@@ -42,6 +42,14 @@ const p2p = useRef<Paste2PromptHandle>(null);
 <Paste2Prompt ref={p2p} launcher={false} onClose={() => console.log("closed")} />
 ```
 
+Or add a keyboard chord instead of (or next to) your own control — the chord
+does what a click on the launcher does, and is ignored while the editor is
+open or focus is in a text field:
+
+```tsx
+<Paste2Prompt launcher={false} hotkey="Alt+Shift+P" />
+```
+
 | Prop | Default | |
 |---|---|---|
 | `position` | `"bottom-right"` | `bottom-left`, `top-right`, `top-left` |
@@ -50,6 +58,7 @@ const p2p = useRef<Paste2PromptHandle>(null);
 | `issueLabels` | | labels for that issue |
 | `issueContext` | | extra lines for its body, e.g. a build version |
 | `submitNotice` | | text naming where `onSubmit` sends the output; shown before **Submit** |
+| `hotkey` | | a chord like `"Alt+Shift+P"` that opens the overlay; needs a modifier, no listener without it, ignored in text fields and while open |
 | `onSubmit` | | called with `{ png, caption, document, page }` on a click of **Submit**; the button needs this and `submitNotice` |
 | `onOpen`, `onClose` | | called once the editor shows / is gone |
 

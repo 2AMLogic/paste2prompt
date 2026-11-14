@@ -1,6 +1,7 @@
 import appCss from "../../../crates/web/style.css";
 import chromeCss from "./chrome.css";
 import { captureViewport } from "./capture.js";
+import { type Hotkey, matchesHotkey, parseHotkey } from "./hotkey.js";
 import { type Editor, type IssueOptions, loadEditor } from "./load-wasm.js";
 import { runSubmit, submitEnabled, type SubmitHandler } from "./submit.js";
 import { type PickedElement, type PickSession, pickBoxes, startPicker } from "./picker.js";
@@ -55,6 +56,13 @@ function styles(): CSSStyleSheet {
  * - `submit-notice`: text naming where the host sends the output, such as
  *   "Sends to dashboard.example.com". With the {@link onSubmit} property it
  *   adds a **Submit** button, with this notice shown before it.
+ * - `hotkey`: one chord, such as `Alt+Shift+P`, that opens the overlay as a
+ *   click on the launcher does. Opt-in: without the attribute no key
+ *   listener is installed. The chord needs at least one modifier; a value
+ *   that does not parse is ignored with a `console.warn`. The chord does
+ *   nothing while the editor is open, and is ignored while focus is in a
+ *   text field or other editable element of the page
+ *   (`hotkey.ts` holds the parsing and matching).
  *
  * The {@link issueContext} property adds lines to the issue body (a build
  * version, say). The {@link onSubmit} property is the host's callback for
@@ -92,6 +100,10 @@ export class Paste2PromptOverlay extends Base {
   #busy = false;
   /** Bumped by every open and close, so a superseded open stops. */
   #attempt = 0;
+  /** The parsed `hotkey` attribute, when it holds a valid chord. */
+  #hotkey: Hotkey | undefined;
+
+  static observedAttributes = ["hotkey"];
 
   /** Extra lines for the body of an issue opened from the editor. */
   issueContext = "";
@@ -137,6 +149,51 @@ export class Paste2PromptOverlay extends Base {
     this.#launcher.addEventListener("click", () => void this.open());
     this.#closeButton = $("button.close");
     this.#closeButton.addEventListener("click", () => this.close());
+  }
+
+  /**
+   * The `hotkey` attribute, re-read on every change: a valid chord arms the
+   * document keydown listener, anything else disarms it, with one warning
+   * for a value that does not parse.
+   */
+  attributeChangedCallback(name: string, oldValue: string | null, value: string | null): void {
+    if (name !== "hotkey") return;
+    this.#hotkey = undefined;
+    this.#unlistenHotkey();
+    if (value === null) return;
+    const hotkey = parseHotkey(value);
+    if (!hotkey) {
+      console.warn(
+        `paste2prompt: ignoring hotkey ${JSON.stringify(value)}: expected one chord like ` +
+          `"Alt+Shift+P" (at least one modifier, then a key)`,
+      );
+      return;
+    }
+    this.#hotkey = hotkey;
+    if (this.isConnected) document.addEventListener("keydown", this.#onHotkeyDown);
+  }
+
+  connectedCallback(): void {
+    if (this.#hotkey) document.addEventListener("keydown", this.#onHotkeyDown);
+  }
+
+  /** The chord: like clicking the launcher, unless the page is being typed in. */
+  #onHotkeyDown = (event: KeyboardEvent): void => {
+    if (!this.#hotkey || !matchesHotkey(this.#hotkey, event)) return;
+    const target = event.target;
+    if (target instanceof HTMLElement) {
+      const tag = target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) {
+        return;
+      }
+    }
+    if (this.isOpen) return;
+    event.preventDefault();
+    void this.open();
+  };
+
+  #unlistenHotkey(): void {
+    document.removeEventListener("keydown", this.#onHotkeyDown);
   }
 
   /** Whether the editor is showing. */
@@ -369,6 +426,7 @@ export class Paste2PromptOverlay extends Base {
   }
 
   disconnectedCallback(): void {
+    this.#unlistenHotkey();
     this.close(true);
   }
 }
