@@ -125,8 +125,9 @@ host app
   we'd only choose it if Leptos doesn't behave inside a shadow root (global
   key handlers, focus and `document()` lookups need checking).
 - **Lazy load** (built, `packages/element/src/load-wasm.ts`). The release
-  wasm is roughly 580 KB gzipped (`packages/element/README.md`; approximate,
-  re-measure with the release build before quoting it). The launcher is a
+  wasm is 1,639,400 bytes, 697,823 gzipped at level 9 (measured 2026-11-14 with
+  `npm run build:wasm -w @2amlogic/paste2prompt-element`, which prints both
+  after `wasm-opt`; wasm-pack 0.13.1, binaryen 123). The launcher is a
   few KB; the wasm loads on first open.
 - **Capture**
   - Default (built, `packages/element/src/capture.ts`): `html-to-image`

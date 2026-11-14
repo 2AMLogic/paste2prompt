@@ -26,8 +26,11 @@ downloaded. Nothing is sent anywhere, except by Open issue (below).
   unless `force`), `isOpen`.
 - **Events:** `paste2prompt-open`, `paste2prompt-close`.
 
-The editor is about 580 KB of wasm (gzip), loaded on first open; until then
-the page only carries the launcher. Load it through a bundler that handles
+The editor is 1,639,400 bytes of wasm (697,823 gzip -9, about 700 KB), loaded
+on first open; until then the page only carries the launcher. Measured from
+`npm run build:wasm -w @2amlogic/paste2prompt-element`, which prints both
+figures for the optimised file (2026-11-14, wasm-pack 0.13.1, binaryen 123,
+rustc 1.99.0); re-run it before quoting a newer number. Load it through a bundler that handles
 `new URL("…", import.meta.url)` (Vite, webpack 5, esbuild with a copy step).
 
 ## Install
