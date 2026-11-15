@@ -180,7 +180,7 @@ export class Paste2PromptOverlay extends Base {
   /** The chord: like clicking the launcher, unless the page is being typed in. */
   #onHotkeyDown = (event: KeyboardEvent): void => {
     if (!this.#hotkey || !matchesHotkey(this.#hotkey, event)) return;
-    const target = event.target;
+    const target = event.composedPath()[0] ?? event.target;
     if (target instanceof HTMLElement) {
       const tag = target.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) {
