@@ -11,7 +11,7 @@
     "build:packages": "npm run build -w @2amlogic/paste2prompt-element -w @2amlogic/paste2prompt-react"
   },
   "devDependencies": {
-    "wrangler": "4.152.0"
+    "wrangler": "4.156.1"
   },
   "workspaces": [
     "packages/element",
